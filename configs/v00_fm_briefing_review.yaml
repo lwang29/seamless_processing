@@ -1,0 +1,51 @@
+schema_version: 1
+session: 2
+review_round: 5
+variant: pi_briefing
+purpose: >
+  A read-only briefing gallery for someone seeing this work for the first time:
+  what the three checks are for, how they are implemented, what they did to a
+  fresh V00 sample, and a stratified cross-section of the clips themselves. No
+  note-taking machinery -- it explains rather than collects.
+
+source_root: ./seamless_interaction
+metadata_root: ./datasets/seamless_interaction_metadata
+model_root: ./model_files
+
+sampling:
+  seed: 20260908
+  # Per category, across five categories. Large enough that each pool is a fair
+  # cross-section rather than a handful of examples, small enough to browse.
+  per_category: 60
+
+clip:
+  duration_s: 30.0
+  output_height_px: 480
+  video_codec: libx264
+  audio_codec: aac
+  audio_muxed: true
+  start_time_basis: measured_avg_frame_rate
+  resample: false
+  filmstrip_thumbnails: 10
+
+smplh:
+  model_type: smplh
+  gender: neutral
+  ext: npz
+  use_pca: false
+  num_betas: 16
+  beta_convention: zeros
+  flat_hand_mean: true
+
+measurement:
+  invalid_guard_band_frames: 3
+  fps_source: measured_avg_frame_rate
+  movement_validity_is_optional: false
+
+outputs:
+  manifest: ./configs/v00_fm_briefing_manifest.csv
+  report_dir: ./outputs/session2/v00_fm_briefing
+  private_root: ./artifacts/private_briefing_v00
+  directory_mode: "0700"
+  media_mode: "0600"
+  link_source_media: true

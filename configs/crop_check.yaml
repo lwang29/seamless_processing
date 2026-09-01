@@ -1,0 +1,29 @@
+schema_version: 2
+session: 3
+purpose: >
+  Six files that exercise every repair: the three anamorphic V01 rasters, both
+  quarter-turned V03 rasters, and the one file whose annotation grid drifts away
+  from its video. Rendered so the corrections can be looked at rather than
+  trusted.
+source_root: ./seamless_interaction
+model_root: ./model_files
+clip:
+  duration_s: 30.0
+  output_height_px: 480
+  filmstrip_thumbnails: 10
+  audio_muxed: true
+  resample: false
+  start_time_basis: measured_avg_frame_rate
+  upright_side_view: true
+smplh:
+  model_type: smplh
+  gender: neutral
+  ext: npz
+  use_pca: false
+  num_betas: 16
+  beta_convention: zeros
+  flat_hand_mean: true
+outputs:
+  manifest: configs/crop_check_manifest.csv
+  private_root: artifacts/private_crop_check
+  link_source_media: false

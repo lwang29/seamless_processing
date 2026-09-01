@@ -1,0 +1,73 @@
+schema_version: 1
+session: 3
+review_round: 12
+variant: v00_recheck
+purpose: >
+  Round 12 turns back to V00 and re-examines it under the four lessons V03
+  taught, since three of them were corrections to choices that had looked settled
+  on V00 evidence.
+
+  All four V00 settings survive that re-test on its 66 existing labels, and the
+  raster lesson closes by census rather than by sample. What does not survive is
+  the *coverage* of those labels: every one of them comes from the flagged pool
+  or the adjudicate pool, so they sit near the 0.43 cut by construction, and
+  FM1's false-negative rate over the comfortably-passing population has never
+  been measured. On V03 that is precisely where the problem lived.
+
+  The asks are therefore a ladder over the pass side, a narrower one below the
+  cut, the files a session outvoted in either direction, and anything FM4 fires
+  on.
+
+  Clips go through the repair layer: black columns cropped, pixel aspect applied,
+  quarter turns undone, annotations indexed by timestamp. Each clip is fetched
+  into memory and played from a blob, so scrubbing no longer depends on what the
+  transport will serve.
+
+source_root: ./seamless_interaction
+metadata_root: ./datasets/seamless_interaction_metadata
+model_root: ./model_files
+
+sampling:
+  seed: 20270211
+  # Adjudication draws.
+  pass_per_band: 10            # x 4 bands above the cut -- the false-negative hunt
+  reject_per_band: 8           # x 2 bands below it
+  scope_per_side: 8            # x 2 directions a session can outvote a file
+  per_ask: 6
+  per_ask: 6
+  cropped_rasters: ["1080x960", "2180x3840"]
+  # The stratified sample: per vendor, per outcome (pass, each flag alone, multi).
+  per_label_per_cell: 7
+
+clip:
+  duration_s: 30.0
+  output_height_px: 480
+  video_codec: libx264
+  audio_codec: aac
+  audio_muxed: true
+  start_time_basis: measured_avg_frame_rate
+  resample: false
+  filmstrip_thumbnails: 10
+  upright_side_view: true
+
+smplh:
+  model_type: smplh
+  gender: neutral
+  ext: npz
+  use_pca: false
+  num_betas: 16
+  beta_convention: zeros
+  flat_hand_mean: true
+
+measurement:
+  invalid_guard_band_frames: 3
+  fps_source: measured_avg_frame_rate
+  movement_validity_is_optional: true
+
+outputs:
+  manifest: ./configs/v00_r12_manifest.csv
+  report_dir: ./outputs/session3/v00_r12_review
+  private_root: ./artifacts/private_review_v00_r12
+  directory_mode: "0700"
+  media_mode: "0600"
+  link_source_media: true

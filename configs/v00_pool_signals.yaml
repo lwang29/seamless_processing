@@ -1,0 +1,30 @@
+schema_version: 1
+session: 2
+purpose: >
+  File-level proxies for the reviewer's Pass-1 vocabulary over a bounded V00
+  candidate pool, used to choose targeted review extremes. Measurement only.
+
+source_root: ./seamless_interaction
+inventory: outputs/02_inventory/summary/inventory_joined.parquet
+
+task_count: 48
+
+sampling:
+  # 8,000 of the 41,205 eligible V00 files (19.4%). An extreme found here is the
+  # most extreme in that sample, not the corpus maximum, and the summary says so.
+  pool_size: 8000
+  pool_seed: 20260809
+  # Every one of the five vocabulary terms is a whole-recording question, so
+  # frames are read on a stride across the entire file rather than in a window.
+  # 5 gives 6 Hz on V00's exact-30 grid, enough for posture and framing and for
+  # wrist travel, which the strided speed columns correct for.
+  frame_stride: 5
+  invalid_guard_band_frames: 3
+  # Audio/video lag is a global property; three 20-second windows cost a quarter
+  # of a whole-file WAV read.
+  audio_windows: 3
+  audio_window_s: 20.0
+
+outputs:
+  root: outputs/session2/v00_pool_signals
+  shards: shards

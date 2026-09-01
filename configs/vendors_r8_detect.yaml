@@ -1,0 +1,69 @@
+schema_version: 2
+session: 2
+review_round: 8
+variant: other_vendors
+purpose: >
+  Round 8. A fresh draw over V01, V02 and V03, disjoint from Rounds 6 and 7,
+  and the first round where the thresholds move.
+
+  New: FM0 rejects a source that cannot be used whatever it shows -- V01's badly
+  anamorphic rasters, V03's room-camera rasters, and files whose annotation grid
+  does not match their video. FM1 becomes per-vendor: 0.43 on V00, 0.54 on V03
+  from 58 hand labels, and off for V01 and V02. FM4 rejects a recording whose
+  audio carries no voice.
+
+  FM2 and FM3 are untouched, so those two columns stay comparable with every
+  earlier round; FM1's V00 column does too.
+
+source_root: ./seamless_interaction
+inventory: outputs/02_inventory/summary/inventory_joined.parquet
+
+task_count: 64
+
+sampling:
+  # Equal draw per vendor rather than per label. V02 is naturalistic only, so a
+  # per-label draw would silently unbalance the vendors against each other.
+  vendors: ["01", "02", "03"]
+  per_vendor: 1500
+  seed: 20261120
+
+smplh:
+  model_root: ./model_files
+  flat_hand_mean: true
+
+measurement:
+  batch_size: 256
+  max_frames: 36000
+  in_frame_margin_px: 0.0
+  vertex_stride: 1
+  smplh_joint_inset_px: 0.0
+  min_violation_run_frames: 1
+  window_s: 30.0
+  static_radius_shoulder_widths: 0.10
+  static_extra_radii: [0.05, 0.15, 0.20, 0.30]
+
+thresholds:
+  # V00's cut, kept as the fallback for any vendor without an entry below.
+  sitting_knee_between_torso: 0.43
+  sitting_by_vendor:
+    "00": 0.43
+    "01": null      # fires on 0 of 1,379 square-pixel V01 files
+    "02": null      # 181 of 182 firings are the shin add-on on cropped legs
+    "03": 0.54      # 33 of 36 hand-labelled sitters, 4 of 22 standing lost
+  excluded_rasters: ["2160x2160", "1920x1080", "640x480", "3840x2160"]
+  max_timebase_drift_s: 0.5
+  audio_dead_speech_level_db: -55.0
+  audio_dead_spectral_flatness: 0.05
+  sitting_shin_verticality: 0.0
+  sitting_seated_file_frac: 0.50
+  sitting_near_cut_knee_between_torso: 0.06
+  smplh_valid_required_frac: 1.0
+  in_frame_required_frac: 1.0
+  in_frame_margin_px: 0.0
+  min_violation_run_frames: 1
+  static_frac_limit: 0.75
+  static_radius_shoulder_widths: 0.10
+
+outputs:
+  root: outputs/session3/vendors_fm_scan_r8
+  shards: shards

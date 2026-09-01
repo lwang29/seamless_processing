@@ -1,0 +1,83 @@
+schema_version: 1
+session: 2
+review_round: 2
+purpose: >
+  V00-only second review, stratified by label so naturalistic versus improvised
+  can be decided from evidence rather than in the abstract. Charades excluded
+  because the model is speech-conditioned.
+
+source_root: ./seamless_interaction
+metadata_root: ./datasets/seamless_interaction_metadata
+model_root: ./model_files
+
+sampling:
+  # Equal allocation per label, deliberately NOT proportional to the corpus
+  # (V00 is 60% improvised by file count). The question is a comparison, so each
+  # arm needs equal precision; the summary records the weights that recover a
+  # corpus-level rate.
+  uniform_per_label: 150
+  uniform_seeds:
+    naturalistic: 20260810
+    improvised: 20260811
+  targeted_count: 100
+  targeted_seed: 20260812
+  # grounded_gesture is the highest-value pool, so it gets a floor in each arm
+  # rather than being left to its natural ~6% share.
+  guaranteed_activity: grounded_gesture
+  guaranteed_activity_per_label: 25
+  duplicate_fraction: 0.12
+  duplicate_seed: 20260813
+
+clip:
+  duration_s: 10.0
+  output_height_px: 480
+  video_codec: libx264
+  audio_codec: aac
+  audio_muxed: true
+  start_time_basis: measured_avg_frame_rate
+  resample: false
+  # Panel A' — a fixed upper-body-and-hands crop. Requested because portrait
+  # rasters gave only ~216 px of width and finger detail was poor.
+  upper_body_crop: true
+  crop_aspect: 1.0
+  crop_pad_frac: 0.12
+  # Whole-file filmstrip above the clip. Most of the reviewer's vocabulary is
+  # file-level and a ten-second window cannot answer it.
+  filmstrip_thumbnails: 12
+
+panels:
+  keypoints_2d: true
+  bounding_box: true
+  validity_indicators:
+    - smplh:is_valid
+    - boxes_and_keypoints:is_valid_box
+    - movement:is_valid
+  upper_body_crop: true
+  projected_smplh_joints: true
+  root_relative_3d_front: true
+  root_relative_3d_side: true
+  whole_file_filmstrip: true
+  waveform: true
+  own_vad: true
+  partner_vad: true
+
+smplh:
+  model_type: smplh
+  gender: neutral
+  ext: npz
+  use_pca: false
+  num_betas: 16
+  beta_convention: zeros
+  flat_hand_mean: true
+
+measurement:
+  invalid_guard_band_frames: 3
+  fps_source: measured_avg_frame_rate
+  movement_validity_is_optional: false  # V00 carries the movement mask on every file
+
+outputs:
+  manifest: ./configs/v00_review_manifest.csv
+  report_dir: ./outputs/session2/v00_review_sampling
+  private_root: ./artifacts/private_review_v00
+  directory_mode: "0700"
+  media_mode: "0600"

@@ -1,0 +1,64 @@
+schema_version: 1
+session: 3
+review_round: 13
+variant: audio_rule
+purpose: >
+  Round 13. FM4 is off for V00 on the reviewer's instruction: all six of its
+  firings in a 4,000-file draw were participants who simply speak rarely.
+
+  The cause is that its floor is absolute while the vendors' levels are not, and
+  making the floor relative does not fix it -- "speaks rarely" and "no voice at
+  all" look alike to any whole-file average. Seconds of released speech does
+  separate them: every confirmed-dead file has zero, five of the six V00 false
+  positives have 1.6 to 79.1 seconds, and an empty VAD occurs in 0 of 400 random
+  V00 files.
+
+  Before swapping one rule for the other, this gallery shows the 84 files the two
+  disagree about, in both directions, plus a control where they agree.
+
+source_root: ./seamless_interaction
+metadata_root: ./datasets/seamless_interaction_metadata
+model_root: ./model_files
+
+sampling:
+  seed: 20270305
+  # Adjudication draws.
+  disagree_per_side: 8         # x 2 directions x 4 vendors
+  per_ask: 8
+  per_ask: 6
+  cropped_rasters: ["1080x960", "2180x3840"]
+  # The stratified sample: per vendor, per outcome (pass, each flag alone, multi).
+  per_label_per_cell: 5
+
+clip:
+  duration_s: 30.0
+  output_height_px: 480
+  video_codec: libx264
+  audio_codec: aac
+  audio_muxed: true
+  start_time_basis: measured_avg_frame_rate
+  resample: false
+  filmstrip_thumbnails: 10
+  upright_side_view: true
+
+smplh:
+  model_type: smplh
+  gender: neutral
+  ext: npz
+  use_pca: false
+  num_betas: 16
+  beta_convention: zeros
+  flat_hand_mean: true
+
+measurement:
+  invalid_guard_band_frames: 3
+  fps_source: measured_avg_frame_rate
+  movement_validity_is_optional: true
+
+outputs:
+  manifest: ./configs/audio_rule_r13_manifest.csv
+  report_dir: ./outputs/session3/audio_rule_r13_review
+  private_root: ./artifacts/private_review_audio_r13
+  directory_mode: "0700"
+  media_mode: "0600"
+  link_source_media: true

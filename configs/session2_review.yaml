@@ -1,0 +1,73 @@
+schema_version: 1
+session: 2
+
+source_root: ./seamless_interaction
+metadata_root: ./datasets/seamless_interaction_metadata
+model_root: ./model_files
+
+sampling:
+  uniform:
+    count: 200
+    seed: 20260805
+    population: filelist_rows_with_renderable_local_bundle
+  targeted:
+    count: 100
+    seed: 20260806
+    strata:
+      - vendor
+      - label
+      - activity_type
+    extrema_source: session1_bounded_measurements
+  pass1:
+    count: 100
+    seed: 20260807
+    free_text_only: true
+  pass2:
+    duplicate_fraction: 0.15
+    duplicate_seed: 20260808
+
+clip:
+  duration_s: 10.0
+  output_height_px: 480
+  video_codec: libx264
+  audio_codec: aac
+  audio_muxed: true
+  start_time_basis: measured_avg_frame_rate
+  resample: false
+
+panels:
+  keypoints_2d: true
+  bounding_box: true
+  validity_indicators:
+    - smplh:is_valid
+    - boxes_and_keypoints:is_valid_box
+    - movement:is_valid
+  projected_smplh_joints: true
+  root_relative_3d_front: true
+  root_relative_3d_side: true
+  waveform: true
+  own_vad: true
+  partner_vad: true
+
+smplh:
+  model_type: smplh
+  gender: neutral
+  ext: npz
+  use_pca: false
+  num_betas: 16
+  beta_convention: zeros
+  # Empirically selected by the bounded M-4 test: lower hand reprojection error
+  # in all seven acceptance files than flat_hand_mean=false.
+  flat_hand_mean: true
+
+measurement:
+  invalid_guard_band_frames: 3
+  fps_source: measured_avg_frame_rate
+  movement_validity_is_optional: true
+
+outputs:
+  manifest: ./configs/session2_review_manifest.csv
+  pass1_manifest: ./configs/session2_review_pass1.csv
+  private_root: ./artifacts/private_review_session2
+  directory_mode: "0700"
+  media_mode: "0600"

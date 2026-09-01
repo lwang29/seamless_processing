@@ -1,0 +1,113 @@
+schema_version: 2
+session: 3
+review_round: 15
+variant: pi_briefing_all_vendors
+purpose: >
+  The corpus-wide briefing scan: all four vendors, one fresh random draw each,
+  measured under the pipeline as it stands after Round 14.
+
+  Every threshold below is the one its own round settled, and each carries the
+  evidence. Nothing here is new — this config exists so the briefing gallery's
+  numbers come from a single sample that nobody has tuned anything against.
+
+source_root: ./seamless_interaction
+inventory: outputs/02_inventory/summary/inventory_joined.parquet
+
+task_count: 64
+
+sampling:
+  # Equal per vendor rather than per label: V02 is naturalistic only, so a
+  # per-label draw would silently unbalance the vendors against each other. The
+  # label split inside each vendor falls out as the population has it.
+  vendors: ["00", "01", "02", "03"]
+  per_vendor: 1500
+  seed: 20270420
+
+smplh:
+  model_root: ./model_files
+  flat_hand_mean: true
+
+measurement:
+  batch_size: 256
+  max_frames: 36000
+  in_frame_margin_px: 0.0
+  vertex_stride: 1
+  smplh_joint_inset_px: 0.0
+  min_violation_run_frames: 1
+  window_s: 30.0
+  static_radius_shoulder_widths: 0.10
+  static_extra_radii: [0.05, 0.15, 0.20, 0.30]
+
+thresholds:
+  # ---- FM0: the source cannot be used, whatever it shows (Round 8) ----------
+  # V01's two anamorphic rasters, whose released SMPL-H absorbed the stretch and
+  # cannot be un-stretched; V03's two room-camera rasters, whose far-field audio
+  # the reviewer found unusable. Neither appears in V00 or V02.
+  excluded_rasters: ["2160x2160", "1920x1080", "640x480", "3840x2160"]
+  # An annotation grid that misses its container by more than this has SMPL-H
+  # unrelated to its video, confirmed on two files.
+  max_timebase_drift_s: 0.5
+
+  # ---- FM1: the participant is seated --------------------------------------
+  # Per-vendor in which measure it reads, not only where the cut sits.
+  #   V00  knee position at 0.43, from 132 hand labels
+  #   V01  off: fires on 0 of 1,379 square-pixel files
+  #   V02  off: 181 of its 182 firings were the shin add-on on cropped legs
+  #   V03  hip flexion at 146 deg, from 164 hand labels
+  sitting_knee_between_torso: 0.43
+  sitting_by_vendor:
+    "00": ["knee_between", 0.43]
+    "01": null
+    "02": null
+    "03": ["hip_flexion", 146.0]
+  # Whose verdict decides. V00's participant-sessions are 1.1% mixed and the
+  # majority rule wins there 8 of 11; V03's are 16.2% mixed and it loses.
+  sitting_unit_scope_by_vendor:
+    "00": session
+    "01": session
+    "02": session
+    "03": file
+  # The inverted-shin add-on. On V00 it fires once in 4,000 files and that file
+  # is seated; on V03 it flagged 8 standing people and no sitters.
+  sitting_shin_addon_by_vendor:
+    "00": true
+    "01": true
+    "02": true
+    "03": false
+  sitting_shin_verticality: 0.0
+  sitting_seated_file_frac: 0.50
+  sitting_near_cut_knee_between_torso: 0.06
+
+  # ---- FM2: the SMPL-H fit is not trusted on every frame (Round 5) ----------
+  # Unchanged since it was set, and the only check no review has contradicted.
+  smplh_valid_required_frac: 1.0
+  in_frame_required_frac: 1.0
+  in_frame_margin_px: 0.0
+  min_violation_run_frames: 1
+
+  # ---- FM3: the hands are held in one position (Round 2) -------------------
+  static_frac_limit: 0.75
+  static_radius_shoulder_widths: 0.10
+
+  # ---- FM4: the audio carries no voice (Round 14) --------------------------
+  # Gates on whether the level *moves*. Static sits at one level whether anyone
+  # speaks or not; a voice makes it swing. On 48 hand labels the classes do not
+  # overlap (unusable 0.20-1.35 dB, usable 1.70-69.04) and 1.5 catches 13 of 13
+  # with no false positive.
+  audio_min_envelope_dynamics_db: 1.5
+  # Off for V00 on the reviewer's instruction, from when FM4 still read absolute
+  # level and all six of its V00 firings were participants who speak rarely. The
+  # dynamics rule would not repeat that: it fires once in 4,000 V00 files, on a
+  # file already rejected on other grounds.
+  audio_dead_by_vendor:
+    "00": false
+    "01": true
+    "02": true
+    "03": true
+  # Measured and reported; no longer decide anything.
+  audio_dead_speech_level_db: -55.0
+  audio_dead_spectral_flatness: 0.05
+
+outputs:
+  root: outputs/session3/pi_briefing_scan
+  shards: shards

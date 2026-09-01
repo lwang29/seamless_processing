@@ -1,0 +1,63 @@
+schema_version: 1
+session: 3
+review_round: 8
+variant: other_vendors_briefing
+purpose: >
+  Round 8. Briefing layout, as standard. The Round-7 answers moved four things:
+  FM0 now rejects unusable sources outright, FM1 is per-vendor (0.54 on V03, off
+  for V01 and V02), FM4 rejects recordings whose audio carries no voice, and the
+  two padded rasters are cropped before display.
+
+  Four asks, all of them checks on those moves rather than open exploration, plus
+  a fresh random draw stratified by vendor and by exactly which checks fired.
+
+  Clips go through the repair layer: pixel aspect applied, quarter turns undone,
+  black columns cropped, annotations indexed by timestamp.
+
+source_root: ./seamless_interaction
+metadata_root: ./datasets/seamless_interaction_metadata
+model_root: ./model_files
+
+sampling:
+  seed: 20261121
+  # Adjudication draws.
+  posture_per_band: 8          # x 4 bands tight around FM1's new 0.54 cut
+  audio_per_band: 6            # x 5 isolation bands, split across the vendors
+  per_odd_raster: 5
+  per_ask: 6
+  cropped_rasters: ["1080x960", "2180x3840"]
+  # The stratified sample: per vendor, per outcome (pass, each flag alone, multi).
+  per_vendor_per_cell: 8
+
+clip:
+  duration_s: 30.0
+  output_height_px: 480
+  video_codec: libx264
+  audio_codec: aac
+  audio_muxed: true
+  start_time_basis: measured_avg_frame_rate
+  resample: false
+  filmstrip_thumbnails: 10
+  upright_side_view: true
+
+smplh:
+  model_type: smplh
+  gender: neutral
+  ext: npz
+  use_pca: false
+  num_betas: 16
+  beta_convention: zeros
+  flat_hand_mean: true
+
+measurement:
+  invalid_guard_band_frames: 3
+  fps_source: measured_avg_frame_rate
+  movement_validity_is_optional: true
+
+outputs:
+  manifest: ./configs/vendors_r8_manifest.csv
+  report_dir: ./outputs/session3/vendors_r8_review
+  private_root: ./artifacts/private_review_vendors_r8
+  directory_mode: "0700"
+  media_mode: "0600"
+  link_source_media: true

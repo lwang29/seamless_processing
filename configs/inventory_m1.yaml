@@ -1,0 +1,30 @@
+schema_version: 1
+
+source_root: seamless_interaction
+metadata_root: datasets/seamless_interaction_metadata
+
+outputs:
+  root: outputs/02_inventory
+  header_shards: header_shards
+  completion_markers: complete
+  catalog: catalog/files.parquet
+  benchmark: benchmark/header_scaling.json
+  summary: summary
+
+task_manifest: configs/m1_inventory_tasks.csv
+task_count: 512
+
+probe:
+  ffprobe_bin: /usr/bin/ffprobe
+  timeout_s: 30
+  workers_per_task: 2
+
+benchmark:
+  seed: 20260805
+  samples_per_worker_setting: 256
+  worker_counts: [1, 4, 8, 16]
+
+safety:
+  require_source_not_effectively_writable: true
+  require_clean_git_for_jobs: true
+  payload_extensions: [.json, .mp4, .npz, .wav]

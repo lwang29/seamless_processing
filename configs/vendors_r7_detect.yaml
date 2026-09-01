@@ -1,0 +1,56 @@
+schema_version: 2
+session: 2
+review_round: 7
+variant: other_vendors
+purpose: >
+  Round 7. A fresh draw over V01, V02 and V03, disjoint from the Round-6 seed,
+  measuring the same three detectors plus what Round-6 review turned up: the
+  container's pixel aspect, the quarter turn baked into some V03 rasters, whether
+  the released annotation grid matches the video, whether the WAV holds audio,
+  and how much of the legs the camera caught. The three thresholds are still
+  unchanged, so the flag columns remain comparable with every earlier round.
+
+source_root: ./seamless_interaction
+inventory: outputs/02_inventory/summary/inventory_joined.parquet
+
+task_count: 64
+
+sampling:
+  # Equal draw per vendor rather than per label. V02 is naturalistic only, so a
+  # per-label draw would silently unbalance the vendors against each other.
+  vendors: ["01", "02", "03"]
+  per_vendor: 1500
+  seed: 20261005
+
+smplh:
+  model_root: ./model_files
+  flat_hand_mean: true
+
+measurement:
+  batch_size: 256
+  max_frames: 36000
+  in_frame_margin_px: 0.0
+  vertex_stride: 1
+  smplh_joint_inset_px: 0.0
+  min_violation_run_frames: 1
+  window_s: 30.0
+  static_radius_shoulder_widths: 0.10
+  static_extra_radii: [0.05, 0.15, 0.20, 0.30]
+
+# Identical to the V00 thresholds, on purpose. Changing them here would confound
+# "the vendor is different" with "the cut is different".
+thresholds:
+  sitting_knee_between_torso: 0.43
+  sitting_shin_verticality: 0.0
+  sitting_seated_file_frac: 0.50
+  sitting_near_cut_knee_between_torso: 0.06
+  smplh_valid_required_frac: 1.0
+  in_frame_required_frac: 1.0
+  in_frame_margin_px: 0.0
+  min_violation_run_frames: 1
+  static_frac_limit: 0.75
+  static_radius_shoulder_widths: 0.10
+
+outputs:
+  root: outputs/session3/vendors_fm_scan_r7
+  shards: shards

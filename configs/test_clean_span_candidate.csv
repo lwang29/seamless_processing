@@ -1,0 +1,4 @@
+clip_id,file_id,label,vendor,source_relbase,start_frame,end_frame,target_mask,target_run_start,target_run_end,selection_note
+clean_fixture_01,V00_S0644_I00000578_P0299A,improvised,V00,improvised/dev/0000/0013/V00_S0644_I00000578_P0299A,0,180,none,60,120,flag-clean candidate for synthetic corruption fixture visual confirmation
+clean_fixture_02,V00_S0648_I00000543_P0801,improvised,V00,improvised/dev/0000/0006/V00_S0648_I00000543_P0801,0,180,none,60,120,flag-clean candidate for synthetic corruption fixture visual confirmation
+clean_fixture_03,V00_S0692_I00000479_P0844A,improvised,V00,improvised/dev/0000/0011/V00_S0692_I00000479_P0844A,0,180,none,60,120,flag-clean candidate for synthetic corruption fixture visual confirmation

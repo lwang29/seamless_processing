@@ -1,0 +1,25 @@
+# Tooling-only one-clip dry run. Session 2 sampling uses session2_review.yaml.
+source_root: ./seamless_interaction
+manifest: configs/review_gallery_dryrun.csv
+private_output_root: artifacts/private_review_gallery_dryrun
+gallery_title: Seamless Interaction — Phase 0 tooling dry run
+
+render:
+  duration_s: 10.0
+  output_height: 480
+  audio_strip_height: 96
+  max_video_panel_width: 680
+  skeleton_panel_width: 420
+  skeleton_half_extent_m: 1.2
+  crf: 23
+  preset: fast
+
+# M-4 accepted this exact neutral/beta-zero/full-axis-angle convention and
+# selected flat_hand_mean=True by lower hand reprojection error.
+joint_provider:
+  factory: seamless_curation.smplh_review_provider:create_provider
+  settings:
+    model_root: ./model_files
+    flat_hand_mean: true
+    batch_size: 64
+    device: cpu

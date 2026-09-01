@@ -1,0 +1,79 @@
+schema_version: 2
+session: 2
+review_round: 9
+variant: other_vendors
+purpose: >
+  Round 9. A fresh draw over V01, V02 and V03, disjoint from Rounds 6 to 8.
+
+  One change from Round 8, and it is a correction rather than an addition: with
+  90 V03 hand labels instead of 58, knee position turns out to separate sitting
+  from standing much less well than **hip flexion**, the measure Round 5 retired
+  on V00 evidence. V03 switches to it -- 44 of 45 sitters for 4 of 45 standing
+  lost, against knee's 41 and 12 -- and rejects less of the vendor besides.
+
+  Voice isolation was tested as an FM4 clause and **refused**: on 30 audio
+  labels the accepted and rejected clips interleave completely. It stays a
+  recorded signal. FM0, FM2, FM3 and FM4's dead-audio rule are unchanged.
+
+source_root: ./seamless_interaction
+inventory: outputs/02_inventory/summary/inventory_joined.parquet
+
+task_count: 64
+
+sampling:
+  # Equal draw per vendor rather than per label. V02 is naturalistic only, so a
+  # per-label draw would silently unbalance the vendors against each other.
+  vendors: ["01", "02", "03"]
+  per_vendor: 1500
+  seed: 20261210
+
+smplh:
+  model_root: ./model_files
+  flat_hand_mean: true
+
+measurement:
+  batch_size: 256
+  max_frames: 36000
+  in_frame_margin_px: 0.0
+  vertex_stride: 1
+  smplh_joint_inset_px: 0.0
+  min_violation_run_frames: 1
+  window_s: 30.0
+  static_radius_shoulder_widths: 0.10
+  static_extra_radii: [0.05, 0.15, 0.20, 0.30]
+
+thresholds:
+  # V00's cut, kept as the fallback for any vendor without an entry below.
+  sitting_knee_between_torso: 0.43
+  # Pinned: Round 10 changed the default to per-file for V03, and this config
+  # has to keep reproducing the numbers Round 9 reported.
+  sitting_unit_scope_by_vendor:
+    "00": session
+    "01": session
+    "02": session
+    "03": session
+  sitting_by_vendor:
+    # (measure, cut). V03 reads hip flexion, not knee position: on 90 hand
+    # labels it catches 44 of 45 sitters for 4 of 45 standing lost, against
+    # knee's 41 and 12.
+    "00": ["knee_between", 0.43]
+    "01": null                       # fires on 0 of 1,379 square-pixel V01 files
+    "02": null                       # 181 of 182 firings are the shin add-on
+    "03": ["hip_flexion", 146.0]
+  excluded_rasters: ["2160x2160", "1920x1080", "640x480", "3840x2160"]
+  max_timebase_drift_s: 0.5
+  audio_dead_speech_level_db: -55.0
+  audio_dead_spectral_flatness: 0.05
+  sitting_shin_verticality: 0.0
+  sitting_seated_file_frac: 0.50
+  sitting_near_cut_knee_between_torso: 0.06
+  smplh_valid_required_frac: 1.0
+  in_frame_required_frac: 1.0
+  in_frame_margin_px: 0.0
+  min_violation_run_frames: 1
+  static_frac_limit: 0.75
+  static_radius_shoulder_widths: 0.10
+
+outputs:
+  root: outputs/session3/vendors_fm_scan_r9
+  shards: shards

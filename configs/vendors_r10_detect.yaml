@@ -1,0 +1,85 @@
+schema_version: 2
+session: 2
+review_round: 10
+variant: other_vendors
+purpose: >
+  Round 10. Same measurements as Round 9 -- nothing about the media changed --
+  with one policy change on top: FM1's verdict scope.
+
+  A seated V03 clip reached the reviewer having passed FM1. Its own file read
+  seated; the other thirteen files in its participant-session outvoted it. The
+  session-majority rule rests on posture being constant within a session, which
+  is true of V00 (1.1% of multi-file sessions mixed) and false of V03 (16.2%,
+  with a median seated share of exactly half in those). On 108 labelled V03 files
+  the majority rule loses both more sitters and more standing files than the
+  per-file reading, so V03 now goes by its own file.
+
+  Everything else is unchanged from Round 9.
+
+source_root: ./seamless_interaction
+inventory: outputs/02_inventory/summary/inventory_joined.parquet
+
+task_count: 64
+
+sampling:
+  # Equal draw per vendor rather than per label. V02 is naturalistic only, so a
+  # per-label draw would silently unbalance the vendors against each other.
+  vendors: ["01", "02", "03"]
+  per_vendor: 1500
+  seed: 20261210
+
+smplh:
+  model_root: ./model_files
+  flat_hand_mean: true
+
+measurement:
+  batch_size: 256
+  max_frames: 36000
+  in_frame_margin_px: 0.0
+  vertex_stride: 1
+  smplh_joint_inset_px: 0.0
+  min_violation_run_frames: 1
+  window_s: 30.0
+  static_radius_shoulder_widths: 0.10
+  static_extra_radii: [0.05, 0.15, 0.20, 0.30]
+
+thresholds:
+  # V00's cut, kept as the fallback for any vendor without an entry below.
+  sitting_knee_between_torso: 0.43
+  # Pinned: Round 11 turned the shin add-on off for V03, and this config has to
+  # keep reproducing the numbers Round 10 reported.
+  sitting_shin_addon_by_vendor:
+    "00": true
+    "01": true
+    "02": true
+    "03": true
+  sitting_unit_scope_by_vendor:
+    "00": session       # 1.1% of multi-file sessions mixed
+    "01": session
+    "02": session
+    "03": file          # 16.2% mixed, and the majority vote is a coin toss there
+  sitting_by_vendor:
+    # (measure, cut). V03 reads hip flexion, not knee position: on 90 hand
+    # labels it catches 44 of 45 sitters for 4 of 45 standing lost, against
+    # knee's 41 and 12.
+    "00": ["knee_between", 0.43]
+    "01": null                       # fires on 0 of 1,379 square-pixel V01 files
+    "02": null                       # 181 of 182 firings are the shin add-on
+    "03": ["hip_flexion", 146.0]
+  excluded_rasters: ["2160x2160", "1920x1080", "640x480", "3840x2160"]
+  max_timebase_drift_s: 0.5
+  audio_dead_speech_level_db: -55.0
+  audio_dead_spectral_flatness: 0.05
+  sitting_shin_verticality: 0.0
+  sitting_seated_file_frac: 0.50
+  sitting_near_cut_knee_between_torso: 0.06
+  smplh_valid_required_frac: 1.0
+  in_frame_required_frac: 1.0
+  in_frame_margin_px: 0.0
+  min_violation_run_frames: 1
+  static_frac_limit: 0.75
+  static_radius_shoulder_widths: 0.10
+
+outputs:
+  root: outputs/session3/vendors_fm_scan_r10
+  shards: shards

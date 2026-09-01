@@ -1,0 +1,11 @@
+{
+  "clip_duration_s": 10.0,
+  "distinct_clips_measured": 400,
+  "git_dirty": false,
+  "git_sha": "9acdcede0595705d98ce662e4fa4a66f7cf3a3b8",
+  "guard_band_frames": 3,
+  "manifest": "configs/v00_review_with_duplicates.csv",
+  "review_items_with_signals": 448,
+  "skip_reasons": {},
+  "skipped": 0
+}

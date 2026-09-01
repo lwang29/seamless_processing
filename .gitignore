@@ -1,0 +1,25 @@
+# Read-only source-data mount.
+seamless_interaction
+datasets
+model_files
+seamless_interaction_clean
+
+# Session-local Git metadata: the platform mounts .git read-only.
+.git-session/
+
+# Local environments and caches.
+.conda/
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Generated outputs and private participant-media derivatives.
+artifacts/
+outputs/
+work/
+
+# Slurm log directory exists in Git so sbatch can open its output path.
+slurm/logs/*.out
+slurm/logs/*.err
+!slurm/logs/.gitkeep
