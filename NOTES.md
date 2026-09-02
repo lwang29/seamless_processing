@@ -1,7 +1,12 @@
-# Session 1 reconnaissance notes
+# Surprises, dead ends, and open questions
 
-This file records surprises, dead ends, and open questions encountered while
-measuring the dev splits. Observations are not filtering decisions.
+A running log of things that were not obvious and cost time to find out. It is
+not a design document and not a record of decisions — the current pipeline is
+described in `README.md` and justified in `reports/17_cospeech_gesture.md`.
+
+Sections are in the order they were written, oldest first. The Session 1 and 2
+entries describe the corpus and the released annotations, and almost all of them
+are still true; the v0 rounds they were written for are gone.
 
 ## Safety and scope
 
@@ -575,7 +580,9 @@ measuring the dev splits. Observations are not filtering decisions.
   in a 30-second clip, so a seek could only land on 0, 10 or 20 s (now one per
   second). And `http.server` has never implemented HTTP `Range`, so a browser
   reads its `200` as "not seekable" and restores the old position. Fixing either
-  alone is not enough; `scripts/serve_gallery.py` covers the second.
+  alone is not enough. Both are still handled: the encoder settings live in
+  `review_renderer.RenderSettings.keyframe_seconds`, and the review app answers
+  `Range` with `206` (`review_app._Handler._send_media`).
 
 ## Other vendors (V01, V02, V03)
 
@@ -818,3 +825,84 @@ Only **sitting, framing, and static hands** remain, all at file level.
 - Translation is strongly box-coupled and behaves like an HMR camera/tracker
   parameter. It should not be called physical root motion. Metric motion now
   comes from neutral-model FK with translation removed and pelvis subtracted.
+
+
+# Co-speech gesture round (2026-09-01)
+
+## Surprises
+
+- The single largest rejecter in the v0 pipeline was not a gesture check. FM2's
+  "SMPL-H valid on every frame of the file" clause alone rejected 62.58% of V00,
+  against 7.12% for static hands and 2.15% for seated posture. Relaxing it to a
+  per-window allowance is what turns a few hundred hours of candidate data into
+  a few thousand.
+- SMPL-H forward kinematics does not need PyTorch or a GPU here. With all
+  sixteen betas zero the rest-pose joints are a constant, so FK is 52 chained
+  rigid transforms: 0.12 s for a 6,900-frame file in pure NumPy against ~2 s
+  through `smplx` on CPU and 0.2 s on an L40S, and it agrees with `smplx` to
+  under a micrometre. The whole-corpus scan is I/O bound as a result.
+- The released SMPL-H trajectories carry essentially no energy above 3 Hz —
+  under 0.05% of wrist power above 5 Hz on every file measured. The fit is
+  heavily temporally smoothed, so a spectral high-frequency jitter test on the
+  *pose* finds nothing. Jitter in this release shows up in the 2D keypoints and
+  as gross tracking failure, not as high-frequency pose noise.
+- Detector noise in the released 2D is directional, not just small. Among
+  consecutive large steps the median cosine between successive displacements is
+  -0.91 to -0.999 on still hands and *positive* on moving ones. Direction
+  separates noise from motion where magnitude cannot — which matters because
+  every magnitude-based jitter signal is confounded with gesture activity.
+- The v0 review clips were placed by a seeded uniform hash over the recording.
+  Measured against the released VAD on the last briefing manifest, 44 of 246
+  windows (17.9%) contained **zero** seconds of the participant's own speech and
+  44.3% contained under 25%. Reviewers were being asked whether people gesture
+  while speaking using clips in which they were not speaking.
+- A first pass of manual review rejected 22 of 36 items for static hands, and
+  the notes were unanimous about what they were seeing: "the same posture in ten
+  of the twelve moments, only the fingers change". None of the speed, travel,
+  episode or excursion measures separated those items from the accepts. What
+  does is *posture variety* — the mean distance between wrist positions sampled
+  2.5 s apart — plus where the hands are (height above the shoulder midpoint)
+  and whether the elbows leave the ribs. Activity and variety are different
+  questions and the first does not imply the second.
+
+## Dead ends
+
+- Gating on the *magnitude* of anything jittery. 106 of 135 candidate quality
+  signals measured in Session 2 correlate with gesture activity up to rho 0.903.
+  Confirmed again here from the other direction: `consistency_r` between the 2D
+  and SMPL-H channels is low on static clips too, because two near-static
+  channels correlate at chance — so it is only interpretable *after* the gesture
+  clauses have established that there is motion to agree about, and it is
+  applied last for that reason.
+- Elbow excursion as a proxy for "the arm is involved". A reviewer accepted a
+  clip whose elbow excursion (36 mm) was the lowest in the sample — the
+  participant keeps his elbows near his body and gestures from the forearms —
+  and rejected one at 53 mm. It is kept as a weak clause at a low threshold, not
+  as a discriminator.
+
+## Bugs worth remembering
+
+- The review card's upper-body crop was clamped to the raster edge without
+  re-deriving the other side, so a wide gesture produced a 1080x1848 crop that
+  ffmpeg squashed into a 250x200 panel. The 2D skeleton, drawn with a single
+  isotropic scale, then landed a body length below the participant, and two
+  reviewers recorded `tracking_broken` against files whose tracking was fine.
+  Found by looking at a card that had been called broken. `tests/test_review_card.py`
+  now asserts the crop's aspect and containment for five keypoint layouts.
+
+## Open questions
+
+- The manifest's coverage of the candidate pool. The gates produce far more
+  candidate material than any review budget can cover, so the accepted set is
+  bounded by review throughput, not by data. The accept rate by stratum is the
+  quantity that would let the unreviewed remainder be estimated; it needs more
+  review before it is worth quoting.
+- Whether `sync_r` (gesture-activity against speech envelope, binned at 0.5 s)
+  is worth a gate. It is measured and reported and its distribution is sensible
+  (p50 0.33), but no labelled comparison exists yet, so it decides nothing.
+- Whether partner audio should be mixed into the review clip. Only the
+  participant's own microphone is muxed today, so the reviewer cannot hear the
+  turn structure — which is relevant to judging whether gesture is co-speech
+  rather than a response to being spoken to.
+- Whether the 30-second window is the right training unit for ViBES, or whether
+  the manifest should name longer contiguous spans and let the loader cut them.

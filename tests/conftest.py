@@ -1,28 +1,29 @@
+"""Synthetic bundles, so the suite runs without the dataset or the body model.
+
+The v0 fixtures read three specific dev recordings off the read-only mount and
+asserted that a manifest index still resolved to the same file id. That coupled
+every test to a 40 TB NFS export and to a CSV that no longer exists. The
+measures under test are geometric, so a bundle can be *constructed* with a known
+answer instead — a wrist that traces a known arc while speech is on, or one that
+only shakes in place — and the test then states what the measure must say about
+it rather than what it happened to say about file 0025.
+
+The one thing that cannot be synthesised is the research-licensed SMPL-H model.
+:func:`model_root` skips the tests that need it rather than failing them.
+"""
+
 from __future__ import annotations
 
-import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pytest
-import yaml
 
-from seamless_curation.features import as_binary_mask
-
-
-@dataclass
-class DevSpan:
-    file_id: str
-    translation: np.ndarray
-    keypoints: np.ndarray
-    smplh_mask: np.ndarray
-    movement_mask: np.ndarray
-    box_mask: np.ndarray
-    fps: float
-    jitter_amplitude: float
-    blank_hand_frames: int
-    fixture_status: str
+FPS = 30.0
+FRAMES = 900  # 30 s
+JOINTS = 133
 
 
 @pytest.fixture(scope="session")
@@ -30,44 +31,130 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture(scope="session", params=(0, 1, 2), ids=("clean_01", "clean_02", "clean_03"))
-def dev_span(repo_root: Path, request: pytest.FixtureRequest) -> DevSpan:
-    spec = yaml.safe_load((repo_root / "tests/fixtures/dev_span.yaml").read_text())
-    span_spec = spec["spans"][request.param]
-    assert span_spec["visually_confirmed_clean"] is True
-    harness_config = yaml.safe_load((repo_root / "configs/harness.yaml").read_text())
-    with (repo_root / harness_config["manifest"]).open(newline="") as handle:
-        manifest = list(csv.DictReader(handle))
-    row = manifest[int(span_spec["manifest_index"])]
-    assert row["file_id"] == span_spec["file_id"], (
-        "visually reviewed fixture manifest index now resolves to a different file"
-    )
-    base = repo_root / harness_config["source_root"] / row["source_relbase"]
-    start = int(span_spec["start_frame"])
-    end = start + int(span_spec["n_frames"])
-    with np.load(f"{base}.npz", allow_pickle=False) as archive:
-        translation = np.asarray(archive["smplh:translation"])[start:end].copy()
-        keypoints = np.asarray(archive["boxes_and_keypoints:keypoints"])[start:end].copy()
-        smplh_mask, smplh_status = as_binary_mask(archive["smplh:is_valid"][start:end])
-        movement_mask, movement_status = as_binary_mask(archive["movement:is_valid"][start:end])
-        box_mask, box_status = as_binary_mask(
-            archive["boxes_and_keypoints:is_valid_box"][start:end]
+@pytest.fixture(scope="session")
+def model_root(repo_root: Path) -> Path:
+    """The neutral SMPL-H asset, or a skip if it is not staged here."""
+
+    for candidate in (repo_root / "model_files", repo_root / "model_files" / "smplh"):
+        if (candidate / "SMPLH_NEUTRAL.npz").exists():
+            return repo_root / "model_files"
+    pytest.skip("SMPL-H neutral model not available in this environment")
+
+
+@dataclass
+class SyntheticBundle:
+    """Released-format arrays with a known ground truth about their motion."""
+
+    payload: dict[str, np.ndarray]
+    vad: list[dict[str, float]]
+    fps: float = FPS
+
+    def write(self, directory: Path, name: str = "V00_S0001_I00000001_P0001") -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        base = directory / name
+        np.savez(base.with_suffix(".npz"), **self.payload)
+        base.with_suffix(".json").write_text(
+            json.dumps({"id": name, "metadata:transcript": [], "metadata:vad": self.vad}),
+            encoding="utf-8",
         )
-    expected = int(span_spec["n_frames"])
-    assert len(translation) == len(keypoints) == expected
-    assert smplh_mask is not None and movement_mask is not None and box_mask is not None
-    assert smplh_status == movement_status == box_status == "ok"
-    # Each fixture is both flag-clean and visually reviewed in the private overlay set.
-    assert smplh_mask.all() and movement_mask.all() and box_mask.all()
-    return DevSpan(
-        file_id=row["file_id"],
-        translation=translation,
-        keypoints=keypoints,
-        smplh_mask=smplh_mask,
-        movement_mask=movement_mask,
-        box_mask=box_mask,
-        fps=float(harness_config["window"]["fps"]),
-        jitter_amplitude=float(spec["jitter_amplitude_model_units"]),
-        blank_hand_frames=int(spec["blank_hand_frames"]),
-        fixture_status=str(span_spec["selection_status"]),
-    )
+        return base
+
+
+def _keypoints(frames: int, wrist_xy: np.ndarray) -> np.ndarray:
+    """A COCO-WholeBody block with plausible shoulders and the given wrists."""
+
+    points = np.zeros((frames, JOINTS, 3), dtype=np.float32)
+    points[:, :, 2] = 0.9
+    points[:, 5, :2] = (620.0, 700.0)   # left shoulder
+    points[:, 6, :2] = (460.0, 700.0)   # right shoulder
+    points[:, 7, :2] = (660.0, 850.0)
+    points[:, 8, :2] = (420.0, 850.0)
+    points[:, 9, :2] = wrist_xy
+    points[:, 10, :2] = wrist_xy + np.array([-160.0, 0.0])
+    for start in (91, 112):
+        points[:, start : start + 21, :2] = points[:, 9 if start == 91 else 10, None, :2]
+    return points
+
+
+def make_bundle(
+    *,
+    frames: int = FRAMES,
+    shoulder_swing_deg: float = 0.0,
+    period_s: float = 2.0,
+    jitter_mm: float = 0.0,
+    single_adjustment: bool = False,
+    global_drift_mm: float = 0.0,
+    speech: tuple[tuple[float, float], ...] = ((1.0, 6.0), (9.0, 15.0), (18.0, 25.0)),
+    smplh_valid: np.ndarray | None = None,
+    hand_freeze_from: int | None = None,
+    seed: int = 0,
+) -> SyntheticBundle:
+    """Build a bundle whose motion is exactly what the arguments say.
+
+    ``shoulder_swing_deg`` sweeps both shoulder joints, which moves the wrists in
+    the torso frame and is therefore *gesture*. ``global_drift_mm`` translates the
+    whole body via the root, which must **not** register as gesture.
+    ``jitter_mm`` adds independent per-frame noise. ``single_adjustment`` replaces
+    the sweep with one brief movement at the start.
+    """
+
+    rng = np.random.default_rng(seed)
+    time = np.arange(frames) / FPS
+    phase = np.sin(2 * np.pi * time / period_s)
+    if single_adjustment:
+        phase = np.zeros(frames)
+        burst = slice(0, int(0.8 * FPS))
+        phase[burst] = np.sin(np.linspace(0, np.pi, burst.stop))
+
+    body = np.zeros((frames, 21, 3), dtype=np.float32)
+    swing = np.deg2rad(shoulder_swing_deg) * phase
+    body[:, 15, 2] = swing      # left shoulder, joint 16 in the full tree
+    body[:, 16, 2] = -swing     # right shoulder
+    if jitter_mm:
+        # Rotational noise of the size that moves a wrist by ~jitter_mm.
+        noise = rng.normal(0.0, jitter_mm / 500.0, size=(frames, 2))
+        body[:, 15, 2] += noise[:, 0]
+        body[:, 16, 2] += noise[:, 1]
+
+    hands = np.zeros((frames, 15, 3), dtype=np.float32)
+    hands[:, :, 0] = 0.05 * phase[:, None]
+    left = hands.copy()
+    right = hands.copy()
+    if hand_freeze_from is not None:
+        left[hand_freeze_from:] = left[hand_freeze_from]
+        right[hand_freeze_from:] = right[hand_freeze_from]
+
+    translation = np.zeros((frames, 3), dtype=np.float32)
+    translation[:, 0] = global_drift_mm / 1000.0 * phase
+
+    wrist_xy = np.stack(
+        [
+            700.0 + 260.0 * shoulder_swing_deg / 60.0 * phase + rng.normal(0, jitter_mm / 8.0, frames),
+            760.0 - 120.0 * shoulder_swing_deg / 60.0 * np.abs(phase),
+        ],
+        axis=1,
+    ).astype(np.float32)
+
+    payload = {
+        "smplh:body_pose": body,
+        "smplh:left_hand_pose": left,
+        "smplh:right_hand_pose": right,
+        "smplh:global_orient": np.zeros((frames, 3), dtype=np.float32),
+        "smplh:translation": translation,
+        "smplh:is_valid": (
+            np.ones(frames, dtype=bool) if smplh_valid is None else smplh_valid.astype(bool)
+        ),
+        "boxes_and_keypoints:keypoints": _keypoints(frames, wrist_xy),
+        "boxes_and_keypoints:is_valid_box": np.ones(frames, dtype=bool),
+    }
+    return SyntheticBundle(payload=payload, vad=[{"start": a, "end": b} for a, b in speech])
+
+
+@pytest.fixture
+def gesturing_bundle() -> SyntheticBundle:
+    return make_bundle(shoulder_swing_deg=55.0)
+
+
+@pytest.fixture
+def static_bundle() -> SyntheticBundle:
+    return make_bundle(shoulder_swing_deg=0.0, jitter_mm=6.0)

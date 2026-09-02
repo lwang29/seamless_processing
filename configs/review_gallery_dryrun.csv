@@ -1,3 +1,0 @@
-review_item_id,clip_id,file_id,source_relbase,partner_source_relbase,sample_group,start_frame,vendor,label,split,activity_type,selection_reason,signals_json,render_policy
-dryrun_000,dryrun_V00_S0644_I00000578_P0299A_f000000,V00_S0644_I00000578_P0299A,improvised/dev/0000/0013/V00_S0644_I00000578_P0299A,improvised/dev/0000/0026/V00_S0644_I00000578_P0799,tooling_dry_run,0,V00,improvised,dev,unverified,Session-1 clean-span fixture extended to 10 s for renderer plumbing only,"{""valid_frac_smplh"":1.0,""valid_frac_box"":1.0,""valid_frac_movement"":1.0}",render
-

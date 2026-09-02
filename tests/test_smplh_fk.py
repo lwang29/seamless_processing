@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from scripts.smplh_fk import (
+from seamless_curation.smplh_fk import (
     COCO_BODY23_TO_SMPLH,
     COCO_LEFT_HAND_TO_SMPLH,
     COCO_RIGHT_HAND_TO_SMPLH,

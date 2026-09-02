@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from scripts.smplh_fk import (
+from .smplh_fk import (
     create_neutral_smplh,
     forward_smplh_joints,
     project_hmr2_full_frame,

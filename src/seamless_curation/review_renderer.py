@@ -1,16 +1,30 @@
-"""Private, synchronized review rendering for Seamless Interaction.
+"""The 30-second review clip: video, reprojected SMPL-H, 3D pose, and audio.
 
-The renderer deliberately knows nothing about SMPL-H camera conventions.  A
+This is the second of the two review artefacts. The first is the card
+(:mod:`seamless_curation.review_card`), which is what a reviewer reads for most
+items; this is what they play when the card leaves a doubt, and it is the only
+artefact that carries **sound**, so it is what an audio-motion synchronisation
+judgement rests on.
+
+The layout is inherited from the v0 galleries and kept because it was validated
+there: a whole-file filmstrip band, Panel A (the video frame with the released
+2D keypoints and the S/B/M validity dots), Panel B (the same frame with the
+SMPL-H forward-kinematic skeleton reprojected onto it), Panel C (two orthographic
+views of the root-relative joints), and a waveform strip shaded with the
+participant's own VAD and their partner's. What is *not* inherited is where the
+clip sits in the recording: v0 placed it by a seeded uniform hash and 17.9% of
+its clips contained no speech at all, whereas the window here comes from the
+candidate selection and is speech-anchored by construction.
+
+The renderer deliberately knows nothing about SMPL-H camera conventions. A
 validated :class:`ReviewJointProvider` must supply projected and root-relative
-joints.  Until that exists, the unavailable provider makes Panels B and C
-visibly unavailable instead of drawing a plausible but unverified skeleton.
+joints; the unavailable provider makes Panels B and C visibly unavailable rather
+than drawing a plausible but unverified skeleton.
 """
 
 from __future__ import annotations
 
-import csv
 import hashlib
-import html
 import importlib
 import json
 import math
@@ -21,13 +35,12 @@ from dataclasses import asdict, dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Protocol, Sequence
-from urllib.parse import quote
 
 import cv2
 import numpy as np
 import soundfile as sf
 
-from seamless_curation.media_repair import (
+from .media_repair import (
     AnnotationTimebase,
     RasterRepair,
     body_roll_deg,
@@ -259,105 +272,6 @@ class RenderSettings:
             raise ValueError("keyframe_seconds must be in [0.1, 10]")
 
 
-# Panel A' (the upper-body crop) was retired in Round 4. Configs written before
-# that still carry its keys; they are dropped rather than rejected, so an old
-# config keeps working instead of crashing on an argument RenderSettings no
-# longer has.
-_RETIRED_RENDER_KEYS = frozenset({"upper_body_crop", "crop_aspect", "crop_pad_frac"})
-
-
-def normalize_review_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Normalize either the dry-run schema or authoritative Session-2 schema.
-
-    The authoritative config keeps shared choices under ``clip``, ``smplh``,
-    and ``outputs``. The dry-run config predates it and already uses renderer
-    field names. Normalization avoids a second, conflicting production config.
-    """
-
-    if "private_output_root" in config:
-        required = ("source_root", "manifest", "private_output_root")
-        missing = [key for key in required if key not in config]
-        if missing:
-            raise ValueError(f"review config missing fields: {missing}")
-        return {
-            "source_root": config["source_root"],
-            "manifest": config["manifest"],
-            "private_output_root": config["private_output_root"],
-            "gallery_title": config.get("gallery_title", "Seamless Interaction review"),
-            "render": {
-                key: value
-                for key, value in dict(config.get("render") or {}).items()
-                if key not in _RETIRED_RENDER_KEYS
-            },
-            "joint_provider": dict(config.get("joint_provider") or {}),
-            "link_source_media": bool(config.get("link_source_media", True)),
-        }
-
-    clip = dict(config.get("clip") or {})
-    outputs = dict(config.get("outputs") or {})
-    smplh = dict(config.get("smplh") or {})
-    required_top = ("source_root", "model_root")
-    missing_top = [key for key in required_top if key not in config]
-    missing_outputs = [key for key in ("manifest", "private_root") if key not in outputs]
-    if missing_top or missing_outputs:
-        raise ValueError(
-            f"authoritative review config missing top={missing_top}, outputs={missing_outputs}"
-        )
-    expected_smplh = {
-        "model_type": "smplh",
-        "gender": "neutral",
-        "ext": "npz",
-        "use_pca": False,
-        "num_betas": 16,
-        "beta_convention": "zeros",
-        "flat_hand_mean": True,
-    }
-    mismatches = {
-        key: (smplh.get(key), expected)
-        for key, expected in expected_smplh.items()
-        if smplh.get(key) != expected
-    }
-    if mismatches:
-        raise ValueError(f"authoritative SMPL-H settings do not match M-4 acceptance: {mismatches}")
-    for key, expected in (
-        ("audio_muxed", True),
-        ("resample", False),
-        ("start_time_basis", "measured_avg_frame_rate"),
-    ):
-        if clip.get(key) != expected:
-            raise ValueError(f"clip.{key} must be {expected!r}; got {clip.get(key)!r}")
-
-    return {
-        "source_root": config["source_root"],
-        "manifest": outputs["manifest"],
-        "private_output_root": outputs["private_root"],
-        # Whole recordings are symlinked, never copied; see link_source_media.
-        "link_source_media": bool(outputs.get("link_source_media", True)),
-        "gallery_title": "Seamless Interaction — Session 2 human review",
-        "render": {
-            "duration_s": clip.get("duration_s", 30.0),
-            "output_height": clip.get("output_height_px", 480),
-            "audio_strip_height": 96,
-            "max_video_panel_width": 680,
-            "skeleton_panel_width": 420,
-            "skeleton_half_extent_m": 1.2,
-            "crf": 23,
-            "preset": "fast",
-            "filmstrip_thumbnails": int(clip.get("filmstrip_thumbnails", 10)),
-            "upright_side_view": bool(clip.get("upright_side_view", True)),
-        },
-        "joint_provider": {
-            "factory": "seamless_curation.smplh_review_provider:create_provider",
-            "settings": {
-                "model_root": config["model_root"],
-                "flat_hand_mean": smplh["flat_hand_mean"],
-                "batch_size": 64,
-                "device": "cpu",
-            },
-        },
-    }
-
-
 def probe_video(path: Path) -> VideoProbe:
     command = [
         "ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -410,29 +324,6 @@ def probe_video(path: Path) -> VideoProbe:
         nominal_fps=nominal_fps,
         sample_aspect=sample_aspect,
     )
-
-
-def read_manifest(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as handle:
-        records = list(csv.DictReader(handle))
-    required = {"review_item_id", "clip_id", "file_id", "source_relbase", "sample_group", "start_frame"}
-    if not records:
-        raise ValueError("review manifest is empty")
-    missing = required - set(records[0])
-    if missing:
-        raise ValueError(f"review manifest missing columns: {sorted(missing)}")
-    seen_items: set[str] = set()
-    clip_definitions: dict[str, tuple[str, str]] = {}
-    for record in records:
-        item = record["review_item_id"]
-        if not item or item in seen_items:
-            raise ValueError(f"review_item_id is empty or duplicated: {item!r}")
-        seen_items.add(item)
-        definition = (record["source_relbase"], record["start_frame"])
-        previous = clip_definitions.setdefault(record["clip_id"], definition)
-        if previous != definition:
-            raise ValueError(f"clip_id {record['clip_id']!r} maps to multiple source intervals")
-    return records
 
 
 def _safe_stem(value: str) -> str:
@@ -1327,424 +1218,3 @@ def render_record(
     }
     _write_private_json(sidecar_path, result)
     return {**record, **result}
-
-
-def _signals(record: Mapping[str, Any]) -> dict[str, Any]:
-    raw = record.get("signals_json", "")
-    if isinstance(raw, str) and raw.strip():
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            return {"signals_json_parse_error": raw}
-    return {key.removeprefix("signal__"): value for key, value in record.items() if key.startswith("signal__")}
-
-
-def normalize_rubric(rubric: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """Validate a Pass-2 rubric spec without supplying any of its content.
-
-    The renderer deliberately owns no failure-mode vocabulary. Categories must
-    arrive from the Pass-1 free-text review; this function only checks that
-    whatever arrives is structurally usable, and refuses a rubric that has not
-    been marked approved by the reviewer who derived it.
-    """
-
-    if rubric is None:
-        return None
-    status = str(rubric.get("status", "")).strip()
-    if status != "approved":
-        raise ValueError(
-            "Pass-2 rubric must carry status: approved once the reviewer has "
-            f"signed off the Pass-1-derived vocabulary; got status={status!r}"
-        )
-    derived = str(rubric.get("derived_from", "")).strip()
-    if not derived or derived == "NOT_YET_DERIVED":
-        raise ValueError("Pass-2 rubric must record derived_from: the Pass-1 notes it came from")
-    items = list(rubric.get("items") or [])
-    if not items:
-        raise ValueError("Pass-2 rubric has no items")
-    seen: set[str] = set()
-    normalized_items: list[dict[str, Any]] = []
-    for item in items:
-        item_id = str(item.get("id", "")).strip()
-        if not re.fullmatch(r"[a-z0-9_]+", item_id):
-            raise ValueError(f"rubric item id must be lowercase snake_case: {item_id!r}")
-        if item_id in seen:
-            raise ValueError(f"duplicate rubric item id: {item_id!r}")
-        seen.add(item_id)
-        low, high = int(item.get("min", 1)), int(item.get("max", 5))
-        if not 1 <= low < high <= 9:
-            raise ValueError(f"rubric item {item_id} needs 1 <= min < max <= 9")
-        normalized_items.append(
-            {
-                "id": item_id,
-                "label": str(item.get("label", item_id)),
-                "min": low,
-                "max": high,
-                "min_label": str(item.get("min_label", str(low))),
-                "max_label": str(item.get("max_label", str(high))),
-            }
-        )
-    overall = dict(rubric.get("overall") or {})
-    overall_id = str(overall.get("id", "would_train")).strip()
-    if not re.fullmatch(r"[a-z0-9_]+", overall_id):
-        raise ValueError(f"rubric overall id must be lowercase snake_case: {overall_id!r}")
-    return {
-        "status": status,
-        "derived_from": derived,
-        "items": normalized_items,
-        "overall": {
-            "id": overall_id,
-            "label": str(overall.get("label", "Would you train on this clip?")),
-        },
-        "rubric_hash": hashlib.sha256(
-            json.dumps(rubric, sort_keys=True, default=str).encode()
-        ).hexdigest()[:16],
-    }
-
-
-def _rubric_controls(rubric: dict[str, Any]) -> str:
-    blocks: list[str] = []
-    for item in rubric["items"]:
-        buttons = "".join(
-            f'<label class="tick"><input type="radio" name="{html.escape(item["id"], quote=True)}" '
-            f'value="{value}"><span>{value}</span></label>'
-            for value in range(item["min"], item["max"] + 1)
-        )
-        blocks.append(
-            f'<div class="rubric-item" data-item-id="{html.escape(item["id"], quote=True)}">'
-            f'<div class="rubric-label">{html.escape(item["label"])}</div>'
-            f'<div class="ticks"><em>{html.escape(item["min_label"])}</em>{buttons}'
-            f'<em>{html.escape(item["max_label"])}</em></div></div>'
-        )
-    overall = rubric["overall"]
-    blocks.append(
-        f'<div class="rubric-item overall" data-item-id="{html.escape(overall["id"], quote=True)}">'
-        f'<div class="rubric-label">{html.escape(overall["label"])}</div>'
-        f'<div class="ticks">'
-        f'<label class="tick"><input type="radio" name="{html.escape(overall["id"], quote=True)}" '
-        f'value="yes"><span>yes</span></label>'
-        f'<label class="tick"><input type="radio" name="{html.escape(overall["id"], quote=True)}" '
-        f'value="no"><span>no</span></label></div></div>'
-    )
-    return f'<fieldset class="rubric">{"".join(blocks)}</fieldset>'
-
-
-def build_gallery_html(
-    records: Sequence[Mapping[str, Any]],
-    title: str = "Seamless Interaction review",
-    rubric: Mapping[str, Any] | None = None,
-) -> str:
-    """Create a self-contained gallery with local notes and optional ratings.
-
-    Without a rubric this is the Pass-1 exploratory gallery: free text only, no
-    categories offered. With an approved rubric it additionally renders that
-    rubric's scales, and the export schema changes to record them.
-    """
-
-    normalized_rubric = normalize_rubric(rubric)
-    manifest_hash = hashlib.sha256(json.dumps(list(records), sort_keys=True, default=str).encode()).hexdigest()[:16]
-    cards: list[str] = []
-    for record in records:
-        item_id = str(record.get("review_item_id", ""))
-        media = record.get("media_file")
-        if media and record.get("status") in {"rendered", "reused"}:
-            source = html.escape(quote(str(media)))
-            # A download link beside the player, so a clip worth a closer look can
-            # be scrubbed in a real video player instead of a grid cell. It points
-            # at the same rendered clip the page embeds -- still cluster-local,
-            # still nothing copied out of the source tree.
-            # Primary download is the full source recording, because the
-            # file-level judgements this gallery asks for cannot be settled from
-            # an excerpt of any length. The rendered panel clip stays available
-            # as a secondary link.
-            excerpt = _panel_clip_label(record.get("duration_s"))
-            full = record.get("source_media_file")
-            buttons = ""
-            if full:
-                name = html.escape(
-                    str(record.get("source_media_name") or Path(str(full)).name), quote=True
-                )
-                buttons += (
-                    f'<a class="download" href="{html.escape(quote(str(full)))}"'
-                    f' download="{name}" title="Download the whole recording, not just this clip">'
-                    f'&#x2b07; Download full video'
-                    f' <span class="size">{_human_bytes(record.get("source_media_bytes"))}</span></a>'
-                )
-            buttons += (
-                f'<a class="download secondary" href="{source}"'
-                f' download="{html.escape(str(media), quote=True)}"'
-                f' title="Download the rendered excerpt with the review panels">'
-                f'{excerpt}</a>'
-                f'<a class="download secondary" href="{source}" target="_blank" rel="noopener"'
-                f' title="Open the panel clip on its own, full width">Open full size</a>'
-            )
-            media_html = (
-                f'<video controls preload="metadata" src="{source}"></video>'
-                f'<div class="clipbar">{buttons}</div>'
-            )
-        else:
-            reason = record.get("error") or record.get("status") or "media unavailable"
-            media_html = f'<div class="missing">No review clip: {html.escape(str(reason))}</div>'
-        signals = _signals(record)
-        signal_rows = "".join(
-            f"<tr><th>{html.escape(str(key))}</th><td>{html.escape(str(value))}</td></tr>"
-            for key, value in sorted(signals.items())
-        ) or '<tr><td colspan="2">No signals supplied</td></tr>'
-        metadata = " · ".join(
-            html.escape(str(record.get(field) or "unverified"))
-            for field in ("vendor", "label", "split", "activity_type")
-        )
-        cards.append(f"""
-<article class="card" data-review-id="{html.escape(item_id, quote=True)}">
-  <header><strong>{html.escape(str(record.get('file_id', '')))}</strong><span class="group">{html.escape(str(record.get('sample_group', 'unverified')))}</span></header>
-  <div class="metadata">{metadata}</div>
-  {media_html}
-  <details><summary>Computed signals and render status</summary><table>{signal_rows}</table>
-    <p>Joint panel: {html.escape(str(record.get('joint_status', 'unverified')))}</p>
-    <p>Selection reason: {html.escape(str(record.get('selection_reason', 'unverified')))}</p>
-  </details>
-  {_rubric_controls(normalized_rubric) if normalized_rubric else ""}
-  <label>{'Additional free-text notes' if normalized_rubric else 'Exploratory free-text notes'}
-    <textarea rows="5" placeholder="Describe what you see or hear. Pass 1 intentionally has no predefined rubric."></textarea>
-  </label>
-  <small>Review item {html.escape(item_id)}</small>
-</article>""")
-    cards_html = "\n".join(cards)
-    safe_title = html.escape(title)
-    # The Pass-1 page must contain no rating machinery whatsoever, not merely a
-    # hidden one: offering categories is what the exploratory pass exists to
-    # avoid. Every rating fragment below is therefore conditional.
-    rubric_css = (
-        ""
-        if normalized_rubric is None
-        else """.rubric { border:1px solid #4c586a; border-radius:6px; margin:.6rem 0; padding:.5rem .6rem; }
-.rubric-item { margin:.35rem 0; } .rubric-item.overall .rubric-label { color:#ffd79a; }
-.rubric-label { font-size:.92rem; margin-bottom:.2rem; }
-.ticks { display:flex; gap:.35rem; align-items:center; flex-wrap:wrap; }
-.ticks em { color:#8f9aab; font-size:.78rem; font-style:normal; }
-.tick { display:inline-flex; align-items:center; gap:.15rem; cursor:pointer; }
-.card.incomplete { border-color:#8a6d3b; }
-"""
-    )
-    if normalized_rubric is None:
-        rubric_state_js = ""
-        rubric_helpers_js = """
-function markCompleteness() {}
-function restoreExtra() {}
-function annotate(entry) { return entry; }
-function progressText() { return ""; }
-function persistExtra() {}
-function firstIncomplete() {
-  return [...document.querySelectorAll(".card")].find(card => !card.querySelector("textarea").value);
-}
-const exportSchema = "exploratory_free_text_v1";
-const exportExtra = {};
-"""
-    else:
-        rubric_state_js = f'const rubric = {json.dumps(normalized_rubric)};\n'
-        rubric_helpers_js = """
-function valuesOf(card) {
-  const values = {};
-  for (const item of card.querySelectorAll(".rubric-item")) {
-    const chosen = item.querySelector("input:checked");
-    if (chosen) values[item.dataset.itemId] = chosen.value;
-  }
-  return values;
-}
-const expectedCount = rubric.items.length + 1;
-function markCompleteness(card) {
-  card.classList.toggle("incomplete", Object.keys(valuesOf(card)).length !== expectedCount);
-}
-function restoreExtra(card) {
-  const stored = localStorage.getItem(namespace + ":ratings:" + card.dataset.reviewId);
-  if (!stored) return;
-  for (const [itemId, value] of Object.entries(JSON.parse(stored))) {
-    const input = card.querySelector('.rubric-item[data-item-id="' + itemId + '"] input[value="' + value + '"]');
-    if (input) input.checked = true;
-  }
-}
-function annotate(entry, card) {
-  entry.ratings = valuesOf(card);
-  entry.complete = Object.keys(entry.ratings).length === expectedCount;
-  return entry;
-}
-function progressText() {
-  const total = document.querySelectorAll(".card").length;
-  const left = document.querySelectorAll(".card.incomplete").length;
-  return " \\u2014 " + (total - left) + "/" + total + " complete";
-}
-function persistExtra(card) {
-  localStorage.setItem(namespace + ":ratings:" + card.dataset.reviewId, JSON.stringify(valuesOf(card)));
-}
-function firstIncomplete() { return document.querySelector(".card.incomplete"); }
-const exportSchema = "structured_ratings_v1";
-const exportExtra = {rubric_hash: rubric.rubric_hash, rubric_derived_from: rubric.derived_from};
-"""
-    intro = (
-        "Pass 2 is structured: rate every scale, answer the overall question, and add "
-        "free text where a scale does not capture what you saw. Notes stay in this "
-        "browser's local storage until exported; the export contains ratings and "
-        "identifiers, never media."
-        if normalized_rubric
-        else "Pass 1 is exploratory: use free text only. Notes stay in this browser's "
-        "local storage until exported; the export contains notes and identifiers, never media."
-    )
-    return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{safe_title}</title>
-<style>
-:root {{ color-scheme: dark; font-family: system-ui,sans-serif; background:#101318; color:#e8edf2; }}
-body {{ margin:0; padding:1rem; }} .toolbar {{ position:sticky; top:0; z-index:2; background:#171c24; padding:.8rem; border:1px solid #394252; display:flex; gap:.7rem; align-items:center; flex-wrap:wrap; }}
-.toolbar input {{ padding:.45rem; }} button {{ padding:.5rem .8rem; cursor:pointer; }}
-.grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(520px,1fr)); gap:1rem; margin-top:1rem; }}
-.card {{ background:#171c24; border:1px solid #394252; border-radius:8px; padding:.8rem; }}
-.card header {{ display:flex; justify-content:space-between; gap:1rem; }} .group {{ color:#9ecbff; }} .metadata,small {{ color:#aeb8c6; }}
-video {{ width:100%; margin:.6rem 0; background:#000; }} .missing {{ min-height:9rem; display:grid; place-items:center; background:#281d20; color:#ffb8b8; margin:.6rem 0; }}
-textarea {{ width:100%; box-sizing:border-box; margin-top:.3rem; background:#0f1319; color:#eef; border:1px solid #4c586a; }}
-table {{ width:100%; border-collapse:collapse; }} th,td {{ border-bottom:1px solid #333c49; padding:.25rem; text-align:left; }}
-.status {{ color:#9dd8ad; }}
-.clipbar {{ display:flex; gap:.5rem; margin:-.3rem 0 .5rem; }}
-.download {{ display:inline-block; padding:.3rem .6rem; border:1px solid #4c586a; border-radius:5px;
-  background:#1d2430; color:#cfe3ff; text-decoration:none; font-size:.82rem; }}
-.download:hover {{ background:#26303e; border-color:#6d7d96; }}
-.download.secondary {{ color:#aeb8c6; font-size:.76rem; padding:.25rem .5rem; }}
-.download .size {{ color:#8f9aab; font-weight:normal; }}
-.clipbar {{ flex-wrap:wrap; align-items:center; }}
-{rubric_css}</style></head><body>
-<h1>{safe_title}</h1>
-<p>{intro}</p>
-<div class="toolbar"><label>Reviewer <input id="reviewer" autocomplete="off"></label><button id="save">Save notes locally</button><button id="export">Export notes JSON</button><button id="next">Jump to next unfinished</button><span class="status" id="status"></span></div>
-<main class="grid">{cards_html}</main>
-<script>
-const namespace = "seamless-review-{manifest_hash}";
-{rubric_state_js}{rubric_helpers_js}
-const reviewer = document.getElementById("reviewer");
-reviewer.value = localStorage.getItem(namespace + ":reviewer") || "";
-for (const card of document.querySelectorAll(".card")) {{
-  card.querySelector("textarea").value = localStorage.getItem(namespace + ":note:" + card.dataset.reviewId) || "";
-  restoreExtra(card);
-  markCompleteness(card);
-  card.addEventListener("change", () => markCompleteness(card));
-}}
-function collect() {{
-  const entries = [...document.querySelectorAll(".card")].map(card => annotate(
-    {{review_item_id: card.dataset.reviewId, free_text: card.querySelector("textarea").value}}, card
-  ));
-  return Object.assign({{
-    schema: exportSchema, manifest_hash: "{manifest_hash}",
-    reviewer_id: reviewer.value, exported_at: new Date().toISOString(), entries
-  }}, exportExtra);
-}}
-function save() {{
-  localStorage.setItem(namespace + ":reviewer", reviewer.value);
-  for (const card of document.querySelectorAll(".card")) {{
-    localStorage.setItem(namespace + ":note:" + card.dataset.reviewId, card.querySelector("textarea").value);
-    persistExtra(card);
-  }}
-  document.getElementById("status").textContent =
-    "Saved " + new Date().toLocaleTimeString() + progressText();
-}}
-document.getElementById("save").addEventListener("click", save);
-document.getElementById("next").addEventListener("click", () => {{
-  const target = firstIncomplete();
-  if (target) target.scrollIntoView({{behavior:"smooth", block:"center"}});
-  else document.getElementById("status").textContent = "Nothing left to do";
-}});
-document.getElementById("export").addEventListener("click", () => {{
-  save(); const blob = new Blob([JSON.stringify(collect(), null, 2)], {{type:"application/json"}});
-  const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "review_notes_{manifest_hash}.json"; link.click(); URL.revokeObjectURL(link.href);
-}});
-</script></body></html>"""
-
-
-def link_source_media(
-    output_root: Path,
-    records: Sequence[dict[str, Any]],
-    source_root: Path,
-    *,
-    subdirectory: str = "source",
-) -> int:
-    """Symlink each record's full source recording under the gallery root.
-
-    Symlinks, not copies: the recordings run to hundreds of megabytes each and
-    duplicating them would cost tens of gigabytes and a second copy of
-    participant media to keep track of. A link under the gallery root also keeps
-    the page self-contained, so it works whether it is opened as a ``file://``
-    URL or served by a static server rooted at the gallery directory — a
-    ``../..`` path out to the source tree would break the second case.
-
-    The link target is read-only source data. The containing directory is set to
-    mode ``0700``, and **nothing is ever chmod-ed through a symlink**, because
-    that would follow the link and try to modify the source file itself.
-
-    Records that gain a working link get ``source_media_file`` and
-    ``source_media_bytes``; records that do not are left untouched, so the
-    gallery never offers a link to a file that is not there.
-    """
-
-    directory = output_root / subdirectory
-    directory.mkdir(parents=True, exist_ok=True)
-    os.chmod(directory, 0o700)
-    linked = 0
-    for record in records:
-        relbase = str(record.get("source_relbase") or "").strip()
-        clip_id = str(record.get("clip_id") or "").strip()
-        if not relbase or not clip_id:
-            continue
-        target = (source_root / relbase).with_suffix(".mp4")
-        if not target.is_file():
-            continue
-        link = directory / f"{_safe_stem(clip_id)}.mp4"
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(target)
-        record["source_media_file"] = f"{subdirectory}/{link.name}"
-        record["source_media_bytes"] = int(target.stat().st_size)
-        record["source_media_name"] = f"{Path(relbase).name}.mp4"
-        linked += 1
-    return linked
-
-
-def _panel_clip_label(seconds: Any) -> str:
-    """"30-s panel clip" for the secondary download button.
-
-    The label used to be the literal string "10-s panel clip". Clip length is now
-    a setting, and a button that promises ten seconds while handing over thirty is
-    worse than no number at all — so an unknown duration drops the number rather
-    than guessing one.
-    """
-
-    try:
-        value = float(seconds)
-    except (TypeError, ValueError):
-        return "panel clip"
-    if not math.isfinite(value) or value <= 0:
-        return "panel clip"
-    return f"{value:.0f}-s panel clip"
-
-
-def _human_bytes(count: Any) -> str:
-    try:
-        size = float(count)
-    except (TypeError, ValueError):
-        return "unknown size"
-    for unit in ("B", "KB", "MB"):
-        if size < 1024:
-            return f"{size:.0f} {unit}"
-        size /= 1024
-    return f"{size:.1f} GB"
-
-
-def write_gallery(
-    path: Path,
-    records: Sequence[Mapping[str, Any]],
-    title: str,
-    rubric: Mapping[str, Any] | None = None,
-) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(build_gallery_html(records, title, rubric), encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
-    os.chmod(path, 0o600)

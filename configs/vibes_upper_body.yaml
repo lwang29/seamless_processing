@@ -1,0 +1,56 @@
+schema_version: 2
+run_id: vibes_upper_body_v1
+
+# What this run is for
+# --------------------
+# Build a manually verified subset of the Seamless Interaction dataset for an
+# initial ViBES upper-body training experiment: torso, shoulders, arms, wrists,
+# hands, neck and head only. Lower-body quality, seated posture and legs outside
+# the frame are explicitly not reasons to reject. The accepted set is defined by
+# a manifest; the source tree is never written to.
+#
+# Every threshold below is a decision. The reason each one sits where it does is
+# in the docstring of the module that reads it (src/seamless_curation/gates.py)
+# and the evidence is in reports/17_cospeech_gesture.md.
+
+source_root: ./seamless_interaction
+model_root: ./model_files
+inventory: ./outputs/02_inventory/summary/inventory_joined.parquet
+
+# All four vendors. The v0 pipeline settled on V00 alone, largely on grounds
+# that no longer apply: FM1 (seated posture) rejected a quarter of V03 and is
+# retired, and global orientation — which is what the quarter-turned V03 rasters
+# get wrong — does not enter root-relative upper-body pose at all. The rasters
+# that genuinely cannot be used are excluded by corpus.EXCLUDED_RASTERS.
+vendors: [V00, V01, V02, V03]
+
+outputs:
+  root: ./outputs/vibes_upper_body_v1
+  private_root: ./artifacts/vibes_upper_body_v1
+
+scan:
+  # 30 s is long enough to see whether a gesture pattern holds and short enough
+  # that a reviewer can watch it. The hop makes neighbouring windows overlap, so
+  # a gesture-dense stretch is found wherever it starts; selection then vetoes
+  # overlap when it picks clips.
+  window_seconds: 30.0
+  hop_seconds: 10.0
+  tasks: 512
+  gesture: {}
+
+gates: {}
+
+select:
+  # The review unit is the file; its card samples the frames that would be
+  # accepted and its verdict applies to all of its clips. Eight 30-second clips
+  # is above the 90th percentile of what a file actually yields, so this is a
+  # guard against one very long recording dominating, not a routine cut.
+  max_clips_per_file: 8
+  # One V00 participant appears in 221 files. An unbalanced training set is a
+  # worse training set even when every clip in it is good.
+  max_files_per_participant: 12
+  seed: vibes-v1
+
+render:
+  clip_seconds: 30.0
+  tasks: 256
