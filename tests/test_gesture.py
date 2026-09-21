@@ -193,3 +193,39 @@ def test_parameters_are_data_not_constants(model_root) -> None:
     _, tight = measure(bundle, model_root, params=GestureParams(min_speed_mm_s=400.0))
 
     assert loose["gesture_frac_speech"] > tight["gesture_frac_speech"]
+
+
+def test_one_handed_gesture_scores_like_two_handed(model_root) -> None:
+    """One arm gesturing must measure the same as two, because of max-over-hands.
+
+    Decided 2026-09-21 (``docs/review_rubric.md``): a participant who gestures
+    with one arm while the other rests in their lap is co-speech motion ViBES
+    should learn. Every activity and posture measure is therefore the maximum
+    over the two hands, never a mean.
+
+    This test is the guard on that. If someone changes any of these measures to
+    average the two sides, the parked arm halves the number and this fails —
+    which is exactly the silent data loss the assertions exist to prevent.
+    """
+
+    _, both = measure(make_bundle(shoulder_swing_deg=55.0), model_root)
+    _, single = measure(make_bundle(shoulder_swing_deg=55.0, one_handed=True), model_root)
+
+    for name in (
+        "wrist_excursion_p90_mm",
+        "elbow_excursion_p90_mm",
+        "posture_spread_mm",
+        "arm_abduction_p75_deg",
+        "gesture_frac_speech",
+    ):
+        assert single[name] == pytest.approx(both[name], rel=0.05), (
+            f"{name}: one-handed {single[name]:.1f} vs two-handed {both[name]:.1f}. "
+            "A mean over hands would roughly halve this."
+        )
+
+    # The parked hand must not read as clasped: the clause is an upper bound and
+    # the resting arm is held away from the gesturing one.
+    assert single["hands_together_frac"] < 0.55
+
+    # And the still arm must not be mistaken for a tracking freeze.
+    assert single["hand_frozen_frac"] < 0.05

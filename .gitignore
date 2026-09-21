@@ -32,3 +32,6 @@ slurm/logs/*.out
 slurm/logs/*.err
 slurm/logs/*.log
 !slurm/logs/.gitkeep
+
+# Staged review site: contains participant media and a plaintext password.
+dist/

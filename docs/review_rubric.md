@@ -23,7 +23,7 @@ Only the torso, shoulders, arms, wrists, hands, neck and head matter.
    pose rows, the skeleton is a plausible human upper body.
 2. **The arms and hands genuinely move.** Across the twelve moments the arms and
    hands take visibly different positions. Not the same posture twelve times
-   with the fingers slightly re-arranged.
+   with the fingers slightly re-arranged. **One arm is enough** — see below.
 3. **The motion is natural, not noise.** Poses look like a person gesturing:
    smooth, anatomically sensible, no popping between unrelated poses, no
    impossible joint bends, no limb detached from the body.
@@ -60,6 +60,18 @@ These come straight from the PI's brief and from what the v0 pipeline got wrong.
 - **Small hand and finger motion on its own** is not automatically a reject —
   but it is only an accept if the arms move too. Beat gestures at chest height
   count; twiddling clasped fingers at the waist does not.
+- **One-handed gesturing.** A participant who gestures actively and in time with
+  their speech using one arm, while the other rests in their lap or on a chair
+  arm, is an **accept**. Judge the gesturing arm on its own merits: if that arm
+  alone satisfies the four criteria above, accept. Do not mark these `unsure`,
+  and do not reject them as `static_hands` because the other hand is still.
+
+  *Decided 2026-09-21, by Logan Wang, pending the PI's confirmation.* This is a
+  rubric change only — no gate moved. Every activity and posture measure in
+  `gates.py` was already computed as the **maximum over the two hands** (the
+  more mobile wrist, the higher wrist, the more abducted arm), so the automated
+  filter has always passed one-handed gesturing; only the written rubric was
+  silent, and reviewers were resolving that silence as `unsure`.
 
 ## Use `unsure` freely
 

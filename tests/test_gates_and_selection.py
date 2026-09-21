@@ -211,3 +211,17 @@ def test_every_clause_names_a_column_the_scan_produces() -> None:
     produced = set(good_window())
     for column, _, _, _ in ALL_CLAUSES:
         assert column in produced, f"{column} is gated but not measured"
+
+
+def test_one_handed_gesture_qualifies() -> None:
+    """The gates must pass a one-handed gesturer (rubric decision, 2026-09-21).
+
+    Stated at the gate level with the measures a one-handed participant actually
+    produces: the gesturing arm sets every max-over-hands measure, and the
+    parked arm shows up only as a wider hand separation, which is an upper-bound
+    clause and so is not tripped.
+    """
+
+    row = good_window(hands_together_frac=0.0, wrist_height_p75_mm=-180.0)
+    gated = apply_gates(pd.DataFrame([row]), Gates())
+    assert bool(gated["qualifies"].iloc[0]), gated["fail_reason"].iloc[0]

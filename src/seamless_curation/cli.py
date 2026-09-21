@@ -11,6 +11,7 @@ them can be re-run alone.
 ``review``       serve the review app and persist verdicts
 ``queue``        list the review queue for a reviewer that is not the app
 ``manifest``     fold verdicts into the accepted manifests
+``export``       package the subset + dataset card for a downstream project
 ``verify``       read sampled manifest rows back out of the source tree
 ``stats``        census and funnel tables for the report
 ===============  =========================================================
@@ -289,6 +290,18 @@ def cmd_import_verdicts(config: RunConfig, args: argparse.Namespace) -> int:
     return 0
 
 
+# -------------------------------------------------------------------- export
+def cmd_export(config: RunConfig, args: argparse.Namespace) -> int:
+    """Package both tiers plus a dataset card for a downstream project."""
+
+    from .export import build_export
+
+    summary = build_export(config)
+    print(json.dumps(summary, indent=2, default=str))
+    _write_json(config.output_root / "export" / "provenance.json", _provenance())
+    return 0
+
+
 # ------------------------------------------------------------------ manifest
 def cmd_manifest(config: RunConfig, args: argparse.Namespace) -> int:
     from .manifest import build_manifests
@@ -326,6 +339,7 @@ STAGES = {
     "queue": cmd_queue,
     "import-verdicts": cmd_import_verdicts,
     "manifest": cmd_manifest,
+    "export": cmd_export,
     "verify": cmd_verify,
     "stats": cmd_stats,
 }
@@ -370,6 +384,8 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument("path")
 
     sub.add_parser("manifest", help="build the accepted manifests from verdicts")
+
+    sub.add_parser("export", help="package both tiers and a dataset card for a downstream user")
 
     verify = sub.add_parser("verify", help="read sampled manifest rows from the source tree")
     verify.add_argument("--sample", type=int, default=24)

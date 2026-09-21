@@ -60,8 +60,14 @@ class SyntheticBundle:
         return base
 
 
-def _keypoints(frames: int, wrist_xy: np.ndarray) -> np.ndarray:
-    """A COCO-WholeBody block with plausible shoulders and the given wrists."""
+def _keypoints(
+    frames: int, wrist_xy: np.ndarray, right_wrist_xy: np.ndarray | None = None
+) -> np.ndarray:
+    """A COCO-WholeBody block with plausible shoulders and the given wrists.
+
+    ``right_wrist_xy`` defaults to the left wrist shifted across the body, which
+    is the two-handed case. Passing a fixed track models one-handed gesturing.
+    """
 
     points = np.zeros((frames, JOINTS, 3), dtype=np.float32)
     points[:, :, 2] = 0.9
@@ -70,7 +76,9 @@ def _keypoints(frames: int, wrist_xy: np.ndarray) -> np.ndarray:
     points[:, 7, :2] = (660.0, 850.0)
     points[:, 8, :2] = (420.0, 850.0)
     points[:, 9, :2] = wrist_xy
-    points[:, 10, :2] = wrist_xy + np.array([-160.0, 0.0])
+    points[:, 10, :2] = (
+        wrist_xy + np.array([-160.0, 0.0]) if right_wrist_xy is None else right_wrist_xy
+    )
     for start in (91, 112):
         points[:, start : start + 21, :2] = points[:, 9 if start == 91 else 10, None, :2]
     return points
@@ -83,6 +91,7 @@ def make_bundle(
     period_s: float = 2.0,
     jitter_mm: float = 0.0,
     single_adjustment: bool = False,
+    one_handed: bool = False,
     global_drift_mm: float = 0.0,
     speech: tuple[tuple[float, float], ...] = ((1.0, 6.0), (9.0, 15.0), (18.0, 25.0)),
     smplh_valid: np.ndarray | None = None,
@@ -95,7 +104,9 @@ def make_bundle(
     the torso frame and is therefore *gesture*. ``global_drift_mm`` translates the
     whole body via the root, which must **not** register as gesture.
     ``jitter_mm`` adds independent per-frame noise. ``single_adjustment`` replaces
-    the sweep with one brief movement at the start.
+    the sweep with one brief movement at the start. ``one_handed`` swings only the
+    left shoulder and parks the right arm in the lap, which is the posture the
+    rubric decided to accept on 2026-09-21.
     """
 
     rng = np.random.default_rng(seed)
@@ -109,7 +120,7 @@ def make_bundle(
     body = np.zeros((frames, 21, 3), dtype=np.float32)
     swing = np.deg2rad(shoulder_swing_deg) * phase
     body[:, 15, 2] = swing      # left shoulder, joint 16 in the full tree
-    body[:, 16, 2] = -swing     # right shoulder
+    body[:, 16, 2] = 0.0 if one_handed else -swing   # right shoulder
     if jitter_mm:
         # Rotational noise of the size that moves a wrist by ~jitter_mm.
         noise = rng.normal(0.0, jitter_mm / 500.0, size=(frames, 2))
@@ -119,7 +130,7 @@ def make_bundle(
     hands = np.zeros((frames, 15, 3), dtype=np.float32)
     hands[:, :, 0] = 0.05 * phase[:, None]
     left = hands.copy()
-    right = hands.copy()
+    right = np.zeros_like(hands) if one_handed else hands.copy()
     if hand_freeze_from is not None:
         left[hand_freeze_from:] = left[hand_freeze_from]
         right[hand_freeze_from:] = right[hand_freeze_from]
@@ -135,6 +146,13 @@ def make_bundle(
         axis=1,
     ).astype(np.float32)
 
+    # A parked right wrist, low and near the midline, i.e. resting in the lap.
+    right_wrist_xy = (
+        np.tile(np.array([[500.0, 980.0]], dtype=np.float32), (frames, 1))
+        if one_handed
+        else None
+    )
+
     payload = {
         "smplh:body_pose": body,
         "smplh:left_hand_pose": left,
@@ -144,7 +162,7 @@ def make_bundle(
         "smplh:is_valid": (
             np.ones(frames, dtype=bool) if smplh_valid is None else smplh_valid.astype(bool)
         ),
-        "boxes_and_keypoints:keypoints": _keypoints(frames, wrist_xy),
+        "boxes_and_keypoints:keypoints": _keypoints(frames, wrist_xy, right_wrist_xy),
         "boxes_and_keypoints:is_valid_box": np.ones(frames, dtype=bool),
     }
     return SyntheticBundle(payload=payload, vad=[{"start": a, "end": b} for a, b in speech])
@@ -158,3 +176,10 @@ def gesturing_bundle() -> SyntheticBundle:
 @pytest.fixture
 def static_bundle() -> SyntheticBundle:
     return make_bundle(shoulder_swing_deg=0.0, jitter_mm=6.0)
+
+
+@pytest.fixture
+def one_handed_bundle() -> SyntheticBundle:
+    """Left arm gesturing, right arm resting in the lap."""
+
+    return make_bundle(shoulder_swing_deg=55.0, one_handed=True)

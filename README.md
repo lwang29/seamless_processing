@@ -12,7 +12,21 @@ review artefacts and verdict log that produced it. No media is copied.
 outputs/<run_id>/accepted_clips.csv             the training manifest
 outputs/<run_id>/accepted_clips_with_audio.csv  the subset verified with sound
 outputs/<run_id>/review_verdicts.jsonl          every verdict, append-only
+outputs/<run_id>/export/                        the packaged handover + dataset card
 ```
+
+> **Just want to train on the data?** You do not need any of this. Read
+> [`docs/using_the_subset.md`](docs/using_the_subset.md) — two CSVs and one
+> loader, no pipeline run required. A self-contained copy for people who cannot
+> read this home directory is staged at
+> `/simurgh/group/lw29/seamless_cospeech_subset/`:
+>
+> ```python
+> from seamless_curation.dataset import load_manifest, iter_clips
+> manifest = load_manifest("outputs/vibes_upper_body_v1/export/clips_verified.csv")
+> for clip in iter_clips(manifest, "seamless_interaction"):
+>     clip.upper_body_pose, clip.left_hand_pose, clip.audio, clip.speech
+> ```
 
 ---
 
@@ -67,14 +81,24 @@ instead of 19 px per hand.
   31,815 files and 3,724 participants.
 - **Rendered:** review cards for the first 4,000 items of the queue; 30-second
   audio clips for the first 400.
-- **Reviewed:** 552 of the 31,815 review items, 67.9% accepted → **848 accepted
-  clips / 7.07 hours** over 375 files and 375 participants. Live numbers are in
-  `outputs/vibes_upper_body_v1/manifest_summary.json`. The verdicts recorded so
-  far come from **vision model reviewers** working from
-  [`docs/review_rubric.md`](docs/review_rubric.md), recorded as
-  `verdict_source: model:claude-opus-5` with `saw_video: false`. They are a floor
-  under the subset, not a substitute for a human pass — see
+- **Reviewed:** 552 of the 31,815 review items → **875 accepted clips / 7.29
+  hours** over 388 files and 388 participants. Live numbers are in
+  `outputs/vibes_upper_body_v1/manifest_summary.json`.
+- **Verdict provenance:** 452 items from **vision model reviewers** working from
+  [`docs/review_rubric.md`](docs/review_rubric.md)
+  (`verdict_source: model:claude-opus-5`, `saw_video: false`), 97 from a human
+  pass **with audio**, and 3 re-resolved by the one-handed rubric decision. The
+  human pass covered 100 items that the models had already judged, which makes
+  it a calibration set: the models produced **zero false accepts** (67/67 human
+  agreement on their accepts) and were somewhat too strict, recalling 87% of
+  what the human accepted. That is why model verdicts are treated as usable
+  rather than provisional — see
   [`reports/17_cospeech_gesture.md`](reports/17_cospeech_gesture.md) §4.
+- **Packaged for downstream use:** `export/clips_verified.csv` (875 clips /
+  7.3 h, every file human- or model-reviewed and accepted) and
+  `export/clips_candidate.csv` (72,728 clips / 606 h, gate-passing and
+  unreviewed, estimated **80%** precision, Wilson 95% CI 71–87%). Start at
+  [`docs/using_the_subset.md`](docs/using_the_subset.md).
 - **To extend it:** open the review app and work down the queue. Human verdicts
   supersede model ones on the items you reach (last write wins), disagreements
   are flagged `contested`, and `seamless-curation manifest` folds it all in. The
@@ -98,6 +122,7 @@ sc select                                        # apply gates, choose candidate
 SC_CARD_ONLY=1 sbatch --array=0-255%80 slurm/render.sbatch
 sc review --port 8765                            # review; verdicts land on disk
 sc manifest                                      # fold verdicts into the manifest
+sc export                                        # package both tiers + a dataset card
 sc stats                                         # regenerate the run report
 ```
 
@@ -137,6 +162,8 @@ same pattern as the `datasets/` and `model_files/` symlinks.
 | `review` | cards + clips | `review_verdicts.jsonl` | human time |
 | `queue` | manifest + verdicts | the work list, for an offline reviewer | seconds |
 | `manifest` | candidates + verdicts | `accepted_clips*.csv` | seconds |
+| `export` | manifests + candidates | `export/clips_{verified,candidate}.csv`, `DATASET.md` | seconds |
+| `verify` | manifest + source tree | a pass/fail report on sampled rows | seconds |
 | `stats` | everything above | `run_report.md` | seconds |
 
 Re-tuning a threshold costs one `select` run and reads no media. Changing a

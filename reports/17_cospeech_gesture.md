@@ -378,59 +378,138 @@ function of how many items have been looked at.
 | | |
 |---|---:|
 | review items judged | 552 of 31,815 |
-| accept / reject / unsure | 375 / 151 / 26 |
-| accept rate | 67.9% |
-| **accepted clips** | **848** |
-| **accepted hours** | **7.07** |
-| accepted files | 375 |
-| accepted participants | 375 |
-| contested items | 0 |
+| accept / reject / unsure | 388 / 140 / 24 |
+| accept rate | 70.3% |
+| **accepted clips** | **875** |
+| **accepted hours** | **7.29** |
+| accepted files | 388 |
+| accepted participants | 388 |
+| hours verified with sound | 1.51 |
+| contested items | 19 |
 | verdicts with no candidate | 0 |
 
-One file per participant so far, which is the stratified round robin working as
-intended: 552 items in, 552 different people.
+One file per participant, which is the stratified round robin working as
+intended: 552 items in, 552 different people. The 19 contested items are not a
+problem — they are the audit trail of §5.1 and of the one-handed decision, where
+a later verdict superseded an earlier one and the log kept both.
 
-**Accept rate by vendor and condition.** It is flat — 0.66 to 0.79 across seven
-strata — and that is the useful finding: the gates are not systematically kinder
-to one vendor or condition, so the accepted subset inherits the candidate pool's
-composition rather than a gate artefact.
+### 5.1 The model reviewers, measured against a human
+
+100 of the 552 items were re-reviewed by hand, **with audio**, against the same
+rubric. Because every one of those items had already been judged by a model
+reviewer, the overlap is a calibration set rather than just more review.
+
+| | human accept | human reject | human unsure |
+|---|---:|---:|---:|
+| **model accept** | 67 | **0** | 0 |
+| **model reject** | 5 | 13 | 6 |
+| **model unsure** | 5 | 0 | 4 |
+
+84% exact agreement, and the load-bearing cell is the zero. **No clip a model
+accepted was rejected on human re-inspection** (n=67; by the rule of three the
+true false-accept rate is under about 4.5% at 95% confidence). Model accepts can
+therefore be promoted without a human re-check, which is what makes scaling
+review affordable at all.
+
+The error is entirely in the other direction: the models recall **87%** of what
+the human accepted (67 of 77), and **nine of the ten** items they wrongly
+withheld were labelled `static_hands`. The model reviewers are too strict on one
+specific clause, not diffusely conservative — which also means the existing
+`static_hands` reject pile is a recoverable resource rather than settled.
+
+This also produced the first entries in `accepted_clips_with_audio.csv`: 1.51
+hours confirmed by ear, where before there were none.
+
+### 5.2 One-handed gesturing is accepted
+
+Three of the human reviewer's notes described the same case: a participant
+gesturing actively and in time with their speech using one arm while the other
+rested in their lap. Both the model and the human marked every one `unsure` —
+not a disagreement, a gap in the rubric.
+
+Resolved 2026-09-21: **one-handed gesturing is an accept**. No gate moved,
+because none had to. Every activity and posture measure was already computed as
+the maximum over the two hands — the more mobile wrist for `posture_spread_mm`,
+the higher wrist for `wrist_height_p75_mm`, the more abducted arm for
+`arm_abduction_p75_deg` — so the automated filter had been passing these all
+along and only the written rubric was silent.
+`test_one_handed_gesture_scores_like_two_handed` pins that invariant: mutating
+`max` to `mean` in the posture measure halves it (355 mm to 178 mm) and fails.
+
+The three items were re-resolved to `accept` with
+`verdict_source: policy:one_handed_allowed_2026-09-21`, the original note
+preserved on each. Pending the PI's confirmation.
+
+### 5.3 Accept rate by stratum
+
+Flat — 0.68 to 0.83 across seven strata — and that is the useful finding: the
+gates are not systematically kinder to one vendor or condition, so the accepted
+subset inherits the candidate pool's composition rather than a gate artefact.
 
 | vendor | condition | judged | accept rate |
 |---|---|---:|---:|
-| V00 | improvised | 66 | 0.70 |
-| V00 | naturalistic | 145 | 0.66 |
-| V01 | improvised | 41 | 0.78 |
+| V00 | improvised | 66 | 0.73 |
+| V00 | naturalistic | 145 | 0.68 |
+| V01 | improvised | 41 | 0.83 |
 | V01 | naturalistic | 23 | 0.74 |
-| V02 | naturalistic | 76 | 0.67 |
+| V02 | naturalistic | 76 | 0.68 |
 | V03 | improvised | 14 | 0.79 |
-| V03 | naturalistic | 187 | 0.66 |
+| V03 | naturalistic | 187 | 0.68 |
 
-**Why items were rejected.** `static_hands` is 80% of the reject reasons given,
-and with `not_co_speech` it is 95%. That is the answer to the PI's question:
-after eleven automated gesture clauses, what a reviewer still throws out is
-overwhelmingly the failure he named, and nothing else comes close.
+Note that this is the *model* reviewers' rate, which §5.1 shows is about 13
+points too strict. On the 100 human-reviewed items the rate is 80%, and the
+vendor picture there is not flat: V03 accepts at 0.64 against 0.85 elsewhere
+(Fisher exact p=0.027, n=100). Six of the nine human reject notes name the
+mechanism — the participant is holding or flipping through a printed prompt
+sheet, which produces either static hands or motion unrelated to speech. All six
+were V03. No metadata field separates them, so this cannot be filtered for free;
+it is a throughput cost, not a quality one, since the review stage catches it.
+
+### 5.4 Why items were rejected
+
+`static_hands` is 78% of the reject reasons given, and with `not_co_speech` it
+is 92%. That is the answer to the PI's question: after eleven automated gesture
+clauses, what a reviewer still throws out is overwhelmingly the failure he
+named, and nothing else comes close.
 
 | reason | items |
 |---|---:|
-| `static_hands` | 141 |
-| `not_co_speech` | 26 |
-| `obscured` | 8 |
+| `static_hands` | 127 |
+| `not_co_speech` | 23 |
+| `obscured` | 5 |
+| `unnatural_motion` | 2 |
 | `tracking_broken` | 1 |
-| `unnatural_motion` | 0 |
 | `out_of_sync` | 0 |
 
 `tracking_broken` at 1 in 552 is worth reading against the first review round,
 where it was 8 in 36 — every one of those was the card's crop bug (§4.3), not
 the data.
 
-**The exchange rate.** 46.1 seconds of accepted data per review item judged, or
-67.8 s per item accepted, at 2.26 clips per accepted file. That is the number to
-plan with: the candidate pool holds 616 hours, so accepted hours grow
-essentially linearly with review effort, and reviewing all 31,815 items would
-yield roughly **407 hours**.
+### 5.5 The exchange rate
 
-`accepted_clips_with_audio.csv` is empty, correctly: no verdict in this pass was
-taken with sound. See §4.2.
+47.6 seconds of accepted data per review item judged, or 67.6 s per item
+accepted, at 2.26 clips per accepted file. That is the number to plan with: the
+candidate pool holds 616 hours, so accepted hours grow essentially linearly with
+review effort, and reviewing all 31,815 items would yield roughly **420 hours**.
+
+### 5.6 The packaged handover
+
+`seamless-curation export` writes the subset in the form a downstream project
+consumes, in two tiers, with the paths already resolved:
+
+| file | clips | hours | files | participants |
+|---|---:|---:|---:|---:|
+| `export/clips_verified.csv` | 875 | 7.29 | 388 | 388 |
+| `export/clips_candidate.csv` | 72,728 | 606.0 | 31,263 | 3,703 |
+
+The candidate tier is everything that passed all eighteen gates and has **not**
+been reviewed; files a reviewer rejected are excluded, so it is strictly better
+than raw gate output. Its precision is estimated from the human-reviewed sample
+rather than asserted: **80%**, Wilson 95% interval 71–87%, n=100. Both tiers are
+lists of frame ranges; `seamless_curation.dataset.load_clip` turns a row into
+pose, hands, audio and rebased VAD, reading only the frames the row names.
+`docs/using_the_subset.md` is written for the consumer and assumes no knowledge
+of this pipeline.
 
 ---
 
@@ -438,9 +517,26 @@ taken with sound. See §4.2.
 
 - **Coverage of the candidate pool.** 552 of 31,815 review items have been
   judged, so 1.7% of it. The accept rate is flat across vendors and conditions
-  (§5), so the remainder projects at about 0.68 and the pool at about 407 hours
-  — but that is a projection from 1.7%, and the way to shrink its error bar is
-  to review more, not to argue about it.
+  (§5.3), so the remainder projects at about 0.70 and the pool at about 420
+  hours — but that is a projection from 1.7%, and the way to shrink its error
+  bar is to review more, not to argue about it.
+- **The model reviewers are 13 points too strict (§5.1), which lifts the
+  ceiling rather than offering a shortcut.** The obvious idea — go back and
+  re-review the `static_hands` reject pile — is worse than it looks. Of the 21
+  model `static_hands` rejects a human re-examined, 5 were accepts (24%), so a
+  judgement spent there returns about 16 s of accepted data against **47.6 s**
+  for a fresh item. Fresh review wins by roughly 3x and the pile should be left
+  alone. What the strictness does change is the projection: at the human accept
+  rate of 80% rather than the model's 70%, the full pool is worth about **480
+  hours**, not 420.
+- **One-handed gesturing is decided but not confirmed (§5.2).** The PI has not
+  yet seen the decision. It is recorded as a distinct `verdict_source`, so
+  reversing it is a filter on the verdict log, not a re-review.
+- **V03 prop handling (§5.3).** V03 is 41% of the pool and accepts at 0.64
+  against 0.85 elsewhere, mostly because participants hold a printed prompt
+  sheet. Nothing in the metadata separates these. A detector is possible but
+  unjustified on n=100; the cheap move, if candidate-tier purity matters more
+  than volume, is to drop V03.
 - **`posture_spread_mm` uses the mean pairwise distance, not the median.** The
   beanie case in §4.1 is the failure mode: ten samples in one posture and two in
   another give a high *mean* pairwise distance even though ten of twelve moments
@@ -454,3 +550,7 @@ taken with sound. See §4.2.
   reviewer cannot hear the turn structure.
 - **Window length.** 30 s was chosen so a clip can be watched; whether ViBES
   wants longer contiguous spans with the loader doing the cutting is untested.
+- **Split balance.** The verified tier is 845 train / 15 dev / 15 test, an
+  artefact of the review queue being stratified over participants rather than
+  over splits. It evens out with more review; until then, evaluation has to come
+  from the candidate tier or from held-out verified participants.

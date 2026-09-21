@@ -38,6 +38,19 @@ clause                           what it stops
 ``min_arm_abduction_p75_deg``    elbows pinned to the ribs
 =============================== =============================================
 
+**Every gesture and posture measure is the maximum over the two hands** — the
+more mobile wrist for ``posture_spread_mm``, the higher wrist for
+``wrist_height_p75_mm``, the more abducted arm for ``arm_abduction_p75_deg``,
+the larger excursion for both excursion clauses, and ``np.maximum`` over the two
+arm-speed tracks for everything derived from speed. That is deliberate and it is
+the reason one-handed gesturing passes: a participant who gestures with one arm
+while the other rests in their lap is co-speech motion ViBES should learn, and
+averaging the two hands would halve every one of these measures and delete them.
+``max_hands_together_frac`` is the only two-hand clause and it is an upper bound,
+so a parked hand held away from the gesturing one does not trip it either.
+``test_one_handed_gesture_qualifies`` in ``tests/test_gates_and_selection.py``
+locks this in. See ``docs/review_rubric.md`` for the matching reviewer rule.
+
 ``min_gesture_speech_ratio`` is deliberately mild. Some genuinely expressive
 people move while listening too, and a hard co-speech contrast would delete
 them; its job is only to reject constant undirected fidgeting.
