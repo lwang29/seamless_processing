@@ -92,6 +92,8 @@ def make_bundle(
     jitter_mm: float = 0.0,
     single_adjustment: bool = False,
     one_handed: bool = False,
+    episodic: bool = False,
+    gesture_in_silence: bool = False,
     global_drift_mm: float = 0.0,
     speech: tuple[tuple[float, float], ...] = ((1.0, 6.0), (9.0, 15.0), (18.0, 25.0)),
     smplh_valid: np.ndarray | None = None,
@@ -107,6 +109,14 @@ def make_bundle(
     the sweep with one brief movement at the start. ``one_handed`` swings only the
     left shoulder and parks the right arm in the lap, which is the posture the
     rubric decided to accept on 2026-09-21.
+
+    ``episodic`` gates the sweep to the speech segments with a raised-cosine
+    envelope, so the bundle produces one gesture episode per utterance separated
+    by rest. That is what real co-speech gesture looks like and what the tier-2
+    episode clauses are written against; a single uninterrupted 30-second sweep
+    is one episode and is correctly rejected by them. ``gesture_in_silence``
+    inverts the envelope, giving motion that is real but anti-correlated with
+    speech -- the ``not_co_speech`` failure mode.
     """
 
     rng = np.random.default_rng(seed)
@@ -116,6 +126,26 @@ def make_bundle(
         phase = np.zeros(frames)
         burst = slice(0, int(0.8 * FPS))
         phase[burst] = np.sin(np.linspace(0, np.pi, burst.stop))
+    elif episodic or gesture_in_silence:
+        # One raised-cosine envelope per speech segment: ramp in over 0.4 s,
+        # hold, ramp out. Multiplying the carrier by this gives a distinct
+        # gesture episode per utterance instead of one continuous sweep.
+        envelope = np.zeros(frames)
+        ramp_frames = max(1, int(0.4 * FPS))
+        for begin, end in speech:
+            lo, hi = int(begin * FPS), min(frames, int(end * FPS))
+            if hi - lo < 2 * ramp_frames:
+                continue
+            envelope[lo:hi] = 1.0
+            envelope[lo : lo + ramp_frames] = 0.5 * (
+                1 - np.cos(np.linspace(0, np.pi, ramp_frames))
+            )
+            envelope[hi - ramp_frames : hi] = 0.5 * (
+                1 + np.cos(np.linspace(0, np.pi, ramp_frames))
+            )
+        if gesture_in_silence:
+            envelope = 1.0 - envelope
+        phase = phase * envelope
 
     body = np.zeros((frames, 21, 3), dtype=np.float32)
     swing = np.deg2rad(shoulder_swing_deg) * phase
@@ -134,6 +164,14 @@ def make_bundle(
     if hand_freeze_from is not None:
         left[hand_freeze_from:] = left[hand_freeze_from]
         right[hand_freeze_from:] = right[hand_freeze_from]
+    else:
+        # A real fit never produces bit-identical hand parameters on consecutive
+        # frames, which is exactly why hand_frozen_frac is a tracking-failure
+        # detector. Synthetic poses that rest at exactly zero would trip it
+        # spuriously, so add a tremor far below any measurable motion: 1e-4 rad
+        # moves a fingertip by about a hundredth of a millimetre.
+        left = left + rng.normal(0.0, 1e-4, size=left.shape).astype(np.float32)
+        right = right + rng.normal(0.0, 1e-4, size=right.shape).astype(np.float32)
 
     translation = np.zeros((frames, 3), dtype=np.float32)
     translation[:, 0] = global_drift_mm / 1000.0 * phase
@@ -176,6 +214,13 @@ def gesturing_bundle() -> SyntheticBundle:
 @pytest.fixture
 def static_bundle() -> SyntheticBundle:
     return make_bundle(shoulder_swing_deg=0.0, jitter_mm=6.0)
+
+
+@pytest.fixture
+def cospeech_bundle() -> SyntheticBundle:
+    """The positive case: episodic two-handed gesturing locked to the speech."""
+
+    return make_bundle(shoulder_swing_deg=55.0, episodic=True)
 
 
 @pytest.fixture

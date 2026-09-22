@@ -2,12 +2,12 @@
 
 For anyone training on the filtered Seamless Interaction data. You do not need
 to know how the filtering works to use this, and you do not need to run any of
-the pipeline. Two CSV files and one loader.
+the pipeline. One CSV and one loader.
 
 > **If you are not `lw29`:** this repository lives under a home directory you
 > cannot read (`/sailhome/lw29` is mode `drwxr-s---`). A self-contained copy —
-> both manifests, the loader package, the dataset card and the review rubric —
-> is staged on group storage at
+> the manifests, the loader package, the dataset card and the pipeline
+> documentation — is staged on group storage at
 > **`/simurgh/group/lw29/seamless_cospeech_subset/`**, and its `README.md` is
 > this document with every path rewritten to work from there. Use that copy.
 > The dataset itself is at `/simurgh2/datasets/seamless_interaction`, which is
@@ -17,29 +17,34 @@ the pipeline. Two CSV files and one loader.
 
 Every row is **a frame range of one participant recording**. Nothing has been
 copied, re-encoded or moved: the release stays where it is and the manifest
-points into it. That means the subset costs no disk, and re-filtering it later
-costs no re-export.
+points into it. The subset costs no disk, and re-filtering it later costs no
+re-export.
 
-| file | clips | hours | what it is |
-|---|---:|---:|---|
-| `clips_verified.csv` | 875 | 7.3 | a human watched and accepted each of these files |
-| `clips_candidate.csv` | 72,728 | 606.0 | passed all 18 automated gates, not yet reviewed |
+| file | clips | hours | files | participants | how it was decided |
+|---|---:|---:|---:|---:|---|
+| `clips_accepted.csv` | 50,741 | 422.8 | 24,204 | 3,504 | fully automated |
+| `clips_reviewed.csv` | 1,030 | 8.6 | 388 | 388 | automated, and a reviewer also accepted it |
 
-Both are under `outputs/vibes_upper_body_v1/export/`, next to a `DATASET.md`
-that documents every column and a `summary.json` with the same numbers in
-machine-readable form.
+Both are under `/simurgh/group/lw29/seamless_cospeech_subset/`, next to a
+`DATASET.md` documenting every column.
 
-**Which to use.** Start with `clips_verified.csv` if you want certainty and 7
-hours is enough. Use `clips_candidate.csv` if you want volume: about **80% of it
-would survive human review** (Wilson 95% interval 71–87%, measured on 100
-reviewed items from the same pool). The 20% that would not is almost entirely
-one failure mode — someone whose hands move enough to clear the thresholds but
-who is not really gesturing, e.g. hands clasped at the waist, or repeatedly
-adjusting a hat. The SMPL-H is still valid and still in sync; it is a weaker
-training signal, not broken data.
+**Use `clips_accepted.csv`.** It is the production subset and what the pipeline
+is for. `clips_reviewed.csv` is a development artefact — the labelled set the
+automated decision was validated against. It is much smaller and will stay that
+way; reach for it only if you specifically need per-clip human sign-off.
 
-Files that a reviewer looked at and **rejected** are excluded from both tiers,
-so the candidate tier is strictly better than raw gate output.
+## How good is it?
+
+Measured against 100 recordings independently reviewed by hand with audio:
+
+- Of the files the pipeline accepts, **93.6%** were also accepted by the human.
+- Of the files the human accepted, the pipeline keeps **91%**.
+- Skipping the final decision step entirely would give 86% — so the step raises
+  precision from 0.86 to 0.936 while keeping nine-tenths of the good material.
+
+The validation set is small (100 files, 13 of them rejections). That is enough
+to show the step helps and roughly where it sits; it is not enough to state the
+accuracy to the decimal place.
 
 ## Quickstart
 
@@ -49,14 +54,14 @@ cd /sailhome/lw29/seamless_processing
 
 # Sanity check: load the first three clips and print what came back.
 PYTHONPATH=src python -m seamless_curation.dataset \
-    outputs/vibes_upper_body_v1/export/clips_verified.csv seamless_interaction
+    outputs/vibes_upper_body_v1/export/clips_accepted.csv seamless_interaction
 ```
 
 ```python
 import sys; sys.path.insert(0, "src")
 from seamless_curation.dataset import load_manifest, iter_clips
 
-manifest = load_manifest("outputs/vibes_upper_body_v1/export/clips_verified.csv")
+manifest = load_manifest("outputs/vibes_upper_body_v1/export/clips_accepted.csv")
 
 for clip in iter_clips(manifest, "seamless_interaction"):
     clip.upper_body_pose    # (frames, 13, 3) float32 axis-angle — the body input
@@ -73,96 +78,83 @@ for clip in iter_clips(manifest, "seamless_interaction"):
 
 `load_clip(row, source_root)` reads **only** the frames the row names — a
 30-second clip out of a four-minute recording costs a 30-second read. Pass
-`with_audio=False` to skip the WAV entirely when you are training pose-only.
-
-For a long run, `iter_clips(..., skip_errors=True)` downgrades an unreadable
-clip to a warning instead of killing the job.
+`with_audio=False` to skip the WAV when training pose-only. For a long run,
+`iter_clips(..., skip_errors=True)` downgrades an unreadable clip to a warning
+instead of killing the job.
 
 ## The 13 upper-body joints
 
 `upper_body_pose` is `smplh:body_pose` indexed to spine 1-3, neck, head, both
 collars, both shoulders, both elbows and both wrists — in that order, as
 `seamless_curation.dataset.UPPER_BODY_ROWS`. The pelvis is not in it; the
-release carries the pelvis rotation separately as `global_orient`. Legs are
+release carries pelvis rotation separately as `global_orient`. Legs are
 deliberately absent: lower-body quality was out of scope for this filtering, so
 it was never checked and should not be trusted.
 
-Hands are 15 joints per side, axis-angle, and are **not** PCA coefficients.
-If you build an SMPL-H model to render these, use `use_pca=False` and
-`flat_hand_mean=True`, with 16 all-zero betas and the neutral model — that is
-the configuration the whole pipeline was validated against (agreement with
-`smplx` to under a micrometre).
+Hands are 15 joints per side, axis-angle, and are **not** PCA coefficients. If
+you build an SMPL-H model to render these, use `use_pca=False` and
+`flat_hand_mean=True`, with 16 all-zero betas and the neutral model — the
+configuration the pipeline was validated against (agreement with `smplx` to
+under a micrometre).
 
 ## Splits
 
-`split` is the **release's own** train/dev/test split, preserved unchanged.
-Filtering did not rebalance it:
+`split` is the **release's own** train/dev/test split, preserved unchanged:
 
 | tier | train | dev | test |
 |---|---:|---:|---:|
-| verified | 845 | 15 | 15 |
-| candidate | 69,317 | 1,813 | 1,598 |
-
-**The verified tier has only 30 non-train clips**, which is not enough to
-evaluate on. Either evaluate on the candidate tier's dev/test (3,411 clips,
-~28 hours, unreviewed), or hold out verified *participants* from train. The
-review queue was ordered as a stratified round-robin over participants, not over
-splits, which is why train dominates — it is an artefact of review order, not of
-the filtering, and it evens out as more review is done.
+| accepted | 44,130 | 1,148 | 876 |
+| reviewed | 845 | 15 | 15 |
 
 Use `vendor + ":" + participant_id` as the participant key. `participant_id` is
 unique only within a vendor, and some ids carry a letter suffix (`0040A`), so
 keep it as a string — `load_manifest` already does.
 
-One participant can appear in several files and a file contributes several
-clips. Caps are applied (≤8 clips per file, ≤12 files per participant), but if
-you are splitting for evaluation, **split on participant, not on clip**, or the
-same person will appear on both sides.
+One participant appears in several files and a file contributes several clips.
+Caps are applied (≤8 clips per file, ≤12 files per participant), but if you are
+splitting for evaluation, **split on participant, not on clip**, or the same
+person appears on both sides.
 
-## What the filtering actually guarantees
+## What the filter guarantees, and what it does not
 
-For every row in either tier, inside that frame range:
+For every row, inside that frame range, the participant speaks for at least 8
+seconds and their arms are demonstrably active during that speech — active in a
+**torso frame**, so swaying and stepping cannot masquerade as gesture; over at
+least three separate episodes covering at least 60% of what they said, so a
+single adjustment cannot qualify; with motion that both travels and is
+directionally coherent, so tracking jitter cannot qualify; and with the hands
+carried high enough and through enough different positions that "technically
+moving but parked in a lap" cannot qualify.
 
-- the released SMPL-H fit is valid on ≥90% of frames, with no invalid run
-  longer than 1 s, and <5% of frames have a frozen hand-pose vector;
-- the participant speaks for ≥8 s, and their arms are active during ≥35% of
-  that speech, spread over ≥3 distinct episodes covering ≥40% of utterances;
-- the wrists travel (≥80 mm excursion) and the elbows are involved (≥35 mm), in
-  a **torso frame** — so swaying, turning and walking cannot masquerade as
-  gesture;
-- the arms visit genuinely different postures rather than one posture repeated;
-- two independent noise guards agree the motion is a person, not the tracker.
+It does **not** guarantee that gesture is well-synchronised with speech beyond
+co-occurrence. `sync_r` and `sync_lag_s` are carried in the manifest but gate
+nothing, because no labelled data exists to calibrate a threshold against.
 
-Measures are the **maximum over the two hands**, so one-handed gesturing counts.
+Full detail — every step, threshold and known failure mode — is in
+[`pipeline.md`](pipeline.md); the plain-language version is
+[`../reports/pipeline_in_plain_language.md`](../reports/pipeline_in_plain_language.md).
 
-Every gate measurement is carried in the CSV, so you can re-filter harder
-without re-running anything:
+## Re-filtering without re-running anything
+
+Every row carries its quality score, its four dimension scores and a `flags`
+string listing every rule it failed:
 
 ```python
-strict = manifest[
-    (manifest.gesture_frac_speech > 0.55) & (manifest.posture_spread_mm > 220)
-]
+strict = manifest[manifest.gesture_quality > 0.6]                  # ~top half
+hands_high = manifest[manifest.wrist_height_p75_mm > -100]         # very active posture
+lively = manifest[manifest.dim_persistence > 0.8]                  # sustained gesturing
 ```
 
 ## Caveats
 
-1. **The verified tier is small because review is the bottleneck, not the data.**
-   Hours grow roughly linearly with review effort.
-2. **Clips from one file are disjoint frame ranges, not contiguous.** Selection
-   vetoes overlap. Do not concatenate them and treat the result as continuous.
-3. **`sync_r` / `sync_lag_s` are correlations, not a sync guarantee.** Audio and
-   pose come from the same recording and share a clock, so gross desync is not a
-   worry, but these columns describe gesture-speech envelope correlation, which
-   is a property of the person, not of the alignment.
-4. **`charades` interactions and four raster formats are excluded** upstream.
-5. **V03 is 41% of the pool and the weakest vendor** — human accept rate 64% vs
-   85% elsewhere, largely because participants there often hold a printed prompt
-   sheet. If you want the cleanest candidate-tier data cheaply, dropping V03 is
-   the single biggest lever.
-
-## Questions this document cannot answer
-
-Why a particular threshold is where it is: `src/seamless_curation/gates.py` has
-the rationale for all eighteen, and `reports/17_cospeech_gesture.md` has the
-measurements behind them. What a reviewer was asked to judge:
-`docs/review_rubric.md`.
+1. **Clips from one file are disjoint frame ranges, not contiguous.** Selection
+   vetoes overlap. Concatenating them is safe; they are not continuous.
+2. **The thresholds are calibrated, not derived.** They come from agreement with
+   a labelled sample and are meant to be moved with evidence.
+3. **`charades` interactions and four raster formats are excluded** upstream.
+4. **Audio is that participant's own channel**, 48 kHz mono float32, already
+   separated in the release. There is no partner voice to remove.
+5. **V03 is the weakest vendor** in the reviewed sample — human accept rate 0.64
+   against 0.85 elsewhere (n=100, Fisher p=0.027), largely because participants
+   there often hold a printed prompt sheet. If you want the cleanest data
+   cheaply, dropping V03 is the single biggest lever.

@@ -1,27 +1,37 @@
-"""Stage 6: turn manual verdicts into the accepted subset definition.
+"""Stage 6: write the accepted subset definition.
 
-Two manifests are written, and the difference between them is the strength of
-the guarantee each one carries. Both are CSV, both name frame ranges inside the
-untouched source tree, and neither copies a byte of media.
+The production decision is **automatic**. ``accepted_clips.csv`` is the output
+of tier-1 gates plus tier-2 qualification (:mod:`seamless_curation.qualify`) and
+contains no human or model verdict in its causal path. Manual review was removed
+from the production pipeline deliberately: at corpus scale it is the binding
+constraint, and every criterion a reviewer was applying has been converted into
+a measured clause with a stated threshold.
 
-``accepted_clips.csv`` — **the training manifest.**
-    One row per accepted clip: a contiguous ``[start_frame, end_frame)`` range of
-    one participant file, which passed every automated gate and belongs to a
-    file a reviewer accepted. ``review_evidence`` is ``card`` or
-    ``card+video``. The reviewer saw twelve moments sampled from exactly these
-    spans, the pelvis-frame SMPL-H pose at each of them, and the whole
-    recording's speech-and-gesture timeline.
+Three files are written, and the difference between them is the strength of the
+guarantee each carries. All are CSV, all name frame ranges inside the untouched
+source tree, and none copies a byte of media.
+
+``accepted_clips.csv`` — **the training manifest, fully automated.**
+    One row per qualifying clip: a contiguous ``[start_frame, end_frame)`` range
+    of one participant file that passed every tier-1 gate and every tier-2
+    disqualifier, and scored at or above the quality threshold. Carries its
+    dimension scores and ``flags`` so any row can be traced to the clauses that
+    admitted it.
+
+``reviewed_clips.csv`` — **the manually verified subset.**
+    Rows whose file a reviewer looked at and accepted. A *development* artefact,
+    retained because it is the labelled set the automated stage is validated
+    against and because it carries a stronger guarantee for anyone who wants
+    one. Producing it is optional; the pipeline runs to completion without it.
 
 ``accepted_clips_with_audio.csv`` — **the strict subset.**
-    The rows whose reviewer played the 30-second clip with sound. Smaller, and
-    the only rows where audio-motion synchronisation was confirmed by ear rather
-    than from the timeline. Provided so that a downstream user who wants the
-    tightest possible guarantee does not have to take the looser one on trust.
+    The reviewed rows whose reviewer played the clip with sound, the only rows
+    where audio-motion synchronisation was confirmed by ear. Also development.
 
-Nothing that was not reviewed appears in either file. ``unsure`` keeps an item
-out; so does a missing verdict. That is the whole point of the stage, so it is
-enforced by construction — the accepted set is an inner join on the verdict log,
-not a filter that could be forgotten.
+The relationship between the first two is a *measurement*, not an assumption:
+``build_manifests`` computes the automated decision's agreement with every
+verdict it can join to and returns it in the summary, so a regression in the
+automated stage shows up as a number rather than as a surprise downstream.
 """
 
 from __future__ import annotations
@@ -33,6 +43,7 @@ from typing import Any
 import pandas as pd
 
 from .config import RunConfig
+from .qualify import qualification_funnel, qualify
 from .review_store import VerdictStore
 
 MANIFEST_COLUMNS = [
@@ -49,29 +60,92 @@ MANIFEST_COLUMNS = [
     "clip_score", "reviewer", "verdict_source", "review_evidence", "reviewed_utc",
 ]
 
+#: Tier-2 columns carried into the automated manifest so a decision is auditable
+#: from the manifest alone, without re-running anything.
+QUALITY_COLUMNS = [
+    "gesture_quality", "dim_posture", "dim_persistence", "dim_vigour", "dim_integrity",
+    "articulation_ratio", "step_cosine_p50", "arm_speed_speech_p50_mm_s",
+    "wrist_range_mm", "episode_median_s", "flags",
+]
+
+#: Columns of the automated production manifest.
+AUTOMATED_COLUMNS = [
+    column for column in MANIFEST_COLUMNS
+    if column not in ("reviewer", "verdict_source", "review_evidence", "reviewed_utc")
+] + QUALITY_COLUMNS + ["decision_source"]
+
+
+def _ensure_fps(frame: pd.DataFrame, config: RunConfig) -> pd.DataFrame:
+    if "fps" in frame.columns and frame["fps"].notna().all():
+        return frame
+    population = pd.read_parquet(config.population_path)[["file_id", "nominal_fps"]]
+    frame = frame.merge(population, on="file_id", how="left")
+    frame["fps"] = frame["nominal_fps"] if "fps" not in frame else frame["fps"].fillna(frame["nominal_fps"])
+    return frame.drop(columns=["nominal_fps"])
+
 
 def build_manifests(config: RunConfig) -> dict[str, Any]:
-    """Write both accepted manifests and return a summary of what they contain."""
+    """Write the automated manifest, the reviewed subset, and agreement between them."""
 
     candidates = pd.read_parquet(config.candidates_path)
+    scored = qualify(candidates, config.qualifiers)
+    scored.to_parquet(config.qualified_path)
+    funnel = qualification_funnel(scored)
+    funnel.to_csv(config.qualification_funnel_path, index=False)
+
+    accepted = _ensure_fps(scored.loc[scored["qualified"]].copy(), config)
+    accepted["decision_source"] = "automated"
+    columns = [column for column in AUTOMATED_COLUMNS if column in accepted.columns]
+    manifest = accepted[columns].sort_values(["file_id", "start_frame"]).reset_index(drop=True)
+    manifest.to_csv(config.accepted_clips_path, index=False)
+
+    summary: dict[str, Any] = {
+        "decision": "automated",
+        "candidates_in": int(len(scored)),
+        "accepted_clips": int(len(manifest)),
+        "accepted_seconds": int(manifest["window_seconds"].sum()) if len(manifest) else 0,
+        "accepted_hours": round(float(manifest["window_seconds"].sum() / 3600), 3) if len(manifest) else 0.0,
+        "accepted_files": int(manifest["file_id"].nunique()) if len(manifest) else 0,
+        "accepted_participants": int(
+            (manifest["vendor"].astype(str) + ":" + manifest["participant_id"].astype(str)).nunique()
+        ) if len(manifest) else 0,
+        "qualified_rate": round(float(len(manifest)) / max(1, len(scored)), 4),
+        "by_vendor": (
+            manifest.groupby("vendor")
+            .agg(clips=("clip_id", "size"), seconds=("window_seconds", "sum"))
+            .assign(hours=lambda f: (f["seconds"] / 3600).round(3))
+            .drop(columns="seconds")
+            .to_dict("index")
+        ) if len(manifest) else {},
+        "funnel": {row.clause: int(row.clips_failed_here) for row in funnel.itertuples()},
+        "qualifiers": config.qualifiers.as_dict(),
+        "manifest": str(config.accepted_clips_path),
+    }
+    summary.update(_review_artefacts(config, scored))
+    return summary
+
+
+def _review_artefacts(config: RunConfig, scored: pd.DataFrame) -> dict[str, Any]:
+    """The reviewed subset and the automated decision's agreement with it.
+
+    Entirely optional: with no verdict log the production manifest above is
+    already written and this contributes an empty block.
+    """
+
     resolved = VerdictStore(config.verdict_log).resolve()
     if resolved.empty:
-        empty = pd.DataFrame(columns=MANIFEST_COLUMNS)
-        empty.to_csv(config.accepted_clips_path, index=False)
-        empty.to_csv(_strict_path(config), index=False)
-        return {"accepted_clips": 0, "accepted_hours": 0.0, "reviewed_items": 0}
+        for path in (config.reviewed_clips_path, _strict_path(config)):
+            pd.DataFrame(columns=MANIFEST_COLUMNS).to_csv(path, index=False)
+        return {"review": {"reviewed_items": 0, "note": "no verdicts; production output is unaffected"}}
 
-    accepted_items = resolved.loc[resolved["verdict"] == "accept"].copy()
-    merged = candidates.merge(
+    accepted_items = resolved.loc[resolved["verdict"] == "accept"]
+    merged = scored.merge(
         accepted_items[
             ["review_item_id", "file_id", "reviewer", "verdict_source", "saw_video", "recorded_utc"]
         ].rename(columns={"file_id": "reviewed_file_id"}),
         on="review_item_id",
         how="inner",
     )
-    # The id is derived from the file, so these must agree. If they ever do not,
-    # a verdict has been re-bound to a file its reviewer never saw, and that is
-    # the one failure this stage exists to make impossible.
     mismatched = merged.loc[
         (merged["reviewed_file_id"].fillna("") != "")
         & (merged["reviewed_file_id"] != merged["file_id"])
@@ -82,56 +156,74 @@ def build_manifests(config: RunConfig) -> dict[str, Any]:
             f"to, e.g. {mismatched.iloc[0]['review_item_id']}: reviewed "
             f"{mismatched.iloc[0]['reviewed_file_id']}, candidate {mismatched.iloc[0]['file_id']}"
         )
-    orphaned = set(accepted_items["review_item_id"]) - set(candidates["review_item_id"])
-    if "fps" not in merged.columns:
-        population = pd.read_parquet(config.population_path)[["file_id", "nominal_fps"]]
-        merged = merged.merge(population, on="file_id", how="left")
-        merged["fps"] = merged["nominal_fps"]
+    merged = _ensure_fps(merged, config)
     merged["review_evidence"] = merged["saw_video"].map({True: "card+video", False: "card"})
     merged["reviewed_utc"] = merged["recorded_utc"]
-
     columns = [column for column in MANIFEST_COLUMNS if column in merged.columns]
-    manifest = merged[columns].sort_values(["file_id", "start_frame"]).reset_index(drop=True)
-    manifest.to_csv(config.accepted_clips_path, index=False)
-
-    strict = manifest.loc[manifest["review_evidence"] == "card+video"]
+    reviewed = merged[columns].sort_values(["file_id", "start_frame"]).reset_index(drop=True)
+    reviewed.to_csv(config.reviewed_clips_path, index=False)
+    strict = reviewed.loc[reviewed["review_evidence"] == "card+video"]
     strict.to_csv(_strict_path(config), index=False)
 
-    reviewed = resolved["verdict"].value_counts().to_dict()
-    by_vendor = (
-        manifest.groupby("vendor")
-        .agg(clips=("clip_id", "size"), seconds=("window_seconds", "sum"))
-        .assign(hours=lambda f: (f["seconds"] / 3600).round(3))
-        .drop(columns="seconds")
-        .to_dict("index")
-    )
+    agreement = _agreement(scored, resolved)
     reject_reasons: dict[str, int] = {}
     for reasons in resolved.loc[resolved["verdict"] == "reject", "reasons"]:
         for reason in reasons or ["unspecified"]:
             reject_reasons[reason] = reject_reasons.get(reason, 0) + 1
 
     return {
-        "reviewed_items": int(len(resolved)),
-        "verdicts": {str(k): int(v) for k, v in reviewed.items()},
-        "accept_rate": round(float(reviewed.get("accept", 0)) / max(1, len(resolved)), 3),
-        "contested_items": int(resolved["contested"].sum()),
-        "reject_reasons": dict(sorted(reject_reasons.items(), key=lambda kv: -kv[1])),
-        "accepted_clips": int(len(manifest)),
-        "accepted_seconds": int(manifest["window_seconds"].sum()),
-        "accepted_hours": round(float(manifest["window_seconds"].sum() / 3600), 3),
-        "accepted_verdicts_without_a_candidate": len(orphaned),
-        "accepted_files": int(manifest["file_id"].nunique()),
-        "accepted_participants": int(
-            (manifest["vendor"].astype(str) + ":" + manifest["participant_id"].astype(str)).nunique()
-        ),
-        "accepted_hours_with_audio": round(float(strict["window_seconds"].sum() / 3600), 3),
-        "by_vendor": by_vendor,
-        "verdict_sources": {
-            str(k): int(v) for k, v in resolved["verdict_source"].value_counts().to_dict().items()
+        "review": {
+            "reviewed_items": int(len(resolved)),
+            "verdicts": {str(k): int(v) for k, v in resolved["verdict"].value_counts().items()},
+            "reject_reasons": dict(sorted(reject_reasons.items(), key=lambda kv: -kv[1])),
+            "reviewed_clips": int(len(reviewed)),
+            "reviewed_hours": round(float(reviewed["window_seconds"].sum() / 3600), 3) if len(reviewed) else 0.0,
+            "reviewed_hours_with_audio": round(float(strict["window_seconds"].sum() / 3600), 3) if len(strict) else 0.0,
+            "reviewed_clips_manifest": str(config.reviewed_clips_path),
+            "strict_manifest": str(_strict_path(config)),
         },
-        "manifest": str(config.accepted_clips_path),
-        "strict_manifest": str(_strict_path(config)),
+        "agreement_with_review": agreement,
     }
+
+
+def _agreement(scored: pd.DataFrame, resolved: pd.DataFrame) -> dict[str, Any]:
+    """Confusion of the automated file-level decision against every verdict.
+
+    The automated stage decides per clip; a reviewer decided per file. The
+    comparable quantity is therefore "does any clip of this file qualify",
+    which is what the file-level manifest membership means.
+    """
+
+    per_file = scored.groupby("review_item_id")["qualified"].max()
+    out: dict[str, Any] = {}
+    source_column = resolved["verdict_source"].astype(str)
+    for source, subset in (
+        # Strictly first-hand human verdicts. Verdicts with a `policy:` source
+        # were converted by a rubric decision rather than observed, so folding
+        # them in would let a rule we wrote grade its own homework.
+        ("human", resolved.loc[source_column == "human"]),
+        ("model", resolved.loc[source_column.str.startswith("model")]),
+        ("all", resolved),
+    ):
+        judged = subset.loc[subset["verdict"].isin(["accept", "reject"])]
+        joined = judged.join(per_file, on="review_item_id", how="inner")
+        if joined.empty:
+            continue
+        gold = (joined["verdict"] == "accept").to_numpy()
+        predicted = joined["qualified"].fillna(False).to_numpy(dtype=bool)
+        tp = int((gold & predicted).sum())
+        fp = int((~gold & predicted).sum())
+        fn = int((gold & ~predicted).sum())
+        tn = int((~gold & ~predicted).sum())
+        out[source] = {
+            "n": int(len(joined)),
+            "true_accept": tp, "false_accept": fp, "false_reject": fn, "true_reject": tn,
+            "precision": round(tp / max(1, tp + fp), 3),
+            "recall": round(tp / max(1, tp + fn), 3),
+            "specificity": round(tn / max(1, tn + fp), 3),
+            "accuracy": round((tp + tn) / max(1, len(joined)), 3),
+        }
+    return out
 
 
 def _strict_path(config: RunConfig) -> Path:

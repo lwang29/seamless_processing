@@ -1,110 +1,95 @@
 # Seamless Interaction — co-speech upper-body curation
 
-Builds a **manually verified** training subset of Meta's Seamless Interaction
-dataset for ViBES upper-body training: clips in which the participant is
-speaking *and* making genuine, sustained hand and arm gestures.
+Builds a training subset of Meta's Seamless Interaction dataset for ViBES
+upper-body training: clips in which the participant is speaking *and* making
+genuine, sustained hand and arm gestures.
 
-The source dataset is read-only and is never modified. The output is a
-**manifest** — a CSV of `(file, start_frame, end_frame)` ranges — plus the
-review artefacts and verdict log that produced it. No media is copied.
+**The pipeline is fully automated.** It takes the read-only release and a config
+file and produces a manifest, with no human or model in the loop. Every
+criterion a reviewer used to apply has been converted into a measured clause
+with a stated threshold; review tooling still exists, but only to produce the
+labelled data those thresholds are calibrated and validated against.
+
+The source dataset is never modified. The output is a **manifest** — a CSV of
+`(file, start_frame, end_frame)` ranges — and no media is copied.
 
 ```
-outputs/<run_id>/accepted_clips.csv             the training manifest
-outputs/<run_id>/accepted_clips_with_audio.csv  the subset verified with sound
-outputs/<run_id>/review_verdicts.jsonl          every verdict, append-only
-outputs/<run_id>/export/                        the packaged handover + dataset card
+outputs/<run_id>/accepted_clips.csv     the training manifest, fully automated
+outputs/<run_id>/qualified_clips.parquet every candidate clip with scores + flags
+outputs/<run_id>/gate_funnel.csv         tier-1: what each clause removed
+outputs/<run_id>/qualification_funnel.csv tier-2: what each clause removed
+outputs/<run_id>/export/                 the packaged handover + dataset card
+outputs/<run_id>/reviewed_clips.csv      [development] the human-verified subset
+outputs/<run_id>/review_verdicts.jsonl   [development] every verdict, append-only
 ```
 
 > **Just want to train on the data?** You do not need any of this. Read
-> [`docs/using_the_subset.md`](docs/using_the_subset.md) — two CSVs and one
+> [`docs/using_the_subset.md`](docs/using_the_subset.md) — one CSV and one
 > loader, no pipeline run required. A self-contained copy for people who cannot
 > read this home directory is staged at
 > `/simurgh/group/lw29/seamless_cospeech_subset/`:
 >
 > ```python
 > from seamless_curation.dataset import load_manifest, iter_clips
-> manifest = load_manifest("outputs/vibes_upper_body_v1/export/clips_verified.csv")
+> manifest = load_manifest("outputs/vibes_upper_body_v1/export/clips_accepted.csv")
 > for clip in iter_clips(manifest, "seamless_interaction"):
 >     clip.upper_body_pose, clip.left_hand_pose, clip.audio, clip.speech
 > ```
 
+> **Want to know exactly what the filter does and why?**
+> [`docs/pipeline.md`](docs/pipeline.md) documents every step: what it does, why
+> it is necessary, what it reads, its thresholds, what makes a clip pass or
+> fail, its assumptions and its known failure modes.
+
 ---
 
-## What this pipeline is for, and what changed
+## The question the pipeline asks
 
-The previous version of this repository measured the corpus and built five
-file-level failure-mode detectors (recording quality, seated posture, SMPL-H
-validity, static hands, dead audio). The PI's review of its output was that the
-thing that actually matters was not being tested:
+Of every 30-second window of every participant recording:
 
-> the most important issue is still whether the person actually makes meaningful
-> hand and arm gestures while speaking […] we need co-speech upper-body motion
-> […] please also make sure that small tracking jitter, global body movement, or
-> a single brief hand adjustment is not mistakenly counted as meaningful
-> gesturing.
+> While this person is speaking, are their hands and arms making natural,
+> visible co-speech gestures?
 
-Four things follow from that, and they are what this version is:
+Technical cleanliness is **not** sufficient, and that is the whole point. A
+recording with flawless SMPL-H tracking, clean audio and a participant whose
+hands rest in their lap for the entire conversation is a reject. The five things
+the pipeline exists to exclude:
 
-**1. Gesture is measured against speech, at window resolution.** The old static-
-hands check (`FM3`) was whole-file, 2D-only, and never looked at the voice
-activity data at all. Measured over 4,000 V00 files it correlates with how much
-the participant *talks* at rho −0.38, so it mostly rejected quiet listeners; and
-among files that passed the whole pipeline, 27.6% still had both wrists parked
-within 0.10 shoulder widths of their own median for more than half the
-recording. See [`reports/17_cospeech_gesture.md`](reports/17_cospeech_gesture.md).
+| excluded | how |
+|---|---|
+| hands essentially static while speaking | gesture measured **only inside the participant's own VAD**; floors on the share of speaking time that is active and on how high the hands are carried |
+| too little visible upper-body movement | posture-variety measures — does the arm visit *different* places, not just move |
+| tracking noise / SMPL-H jitter | a frame must show **travel**, not just speed; plus two guards that test *direction* and *cross-channel agreement*, never magnitude |
+| global body movement rather than articulation | everything measured in a **torso frame**, so swaying and stepping are near-zero by construction; plus an arm-vs-torso ratio |
+| a single brief adjustment or transient | episode structure: how many separate episodes, how long each, and what share of utterances they cover |
 
-**2. Posture, legs and framing no longer reject anything.** ViBES trains the
-upper body. The seated-posture check is retired outright, and the SMPL-H
-validity check — which alone rejected 62.6% of V00 by demanding a valid fit on
-*every* frame of the file — is replaced by a per-window allowance plus a direct
-measure of the damage an invalid frame actually does to the hands.
+And one thing it exists *not* to exclude: **a subtle but genuine gesturer.** The
+tier-2 decision is a weighted score, not a conjunction of tight thresholds, so
+being modest on amplitude is survivable if persistence, coherence and
+speech-locking are good. `test_subtle_but_genuine_gesture_is_not_discarded` is
+the guard on that, and it matters as much as the exclusions: a filter that
+rejects everything satisfies every exclusion test ever written.
 
-**3. Manual visual review is the acceptance criterion.** Automation narrows
-118,570 eligible files to a candidate pool; nothing enters the manifest without
-a recorded verdict against it. The old tooling could not support this: it had no
-verdict store at all, its notes lived in browser `localStorage` under a key that
-changed whenever a clip was re-rendered, and 17.9% of the clips it asked
-reviewers to judge for co-speech gesture contained no speech.
-
-**4. The review artefact was rebuilt for throughput.** A card renders in ~7 s,
-is read in a few seconds, and shows the upper body at 250 px per thumbnail
-instead of 19 px per hand.
+---
 
 ## Where this run stands
 
-`configs/vibes_upper_body.yaml` is the live run. Its state, as of the last
-`seamless-curation stats`:
-
 - **Scanned:** all 118,570 eligible files, 2,423,304 windows, 7,550 hours, zero
   read errors.
-- **Candidates:** 414,504 qualifying windows → **73,883 clips / 616 hours** over
-  31,815 files and 3,724 participants.
-- **Rendered:** review cards for the first 4,000 items of the queue; 30-second
-  audio clips for the first 400.
-- **Reviewed:** 552 of the 31,815 review items → **875 accepted clips / 7.29
-  hours** over 388 files and 388 participants. Live numbers are in
-  `outputs/vibes_upper_body_v1/manifest_summary.json`.
-- **Verdict provenance:** 452 items from **vision model reviewers** working from
-  [`docs/review_rubric.md`](docs/review_rubric.md)
-  (`verdict_source: model:claude-opus-5`, `saw_video: false`), 97 from a human
-  pass **with audio**, and 3 re-resolved by the one-handed rubric decision. The
-  human pass covered 100 items that the models had already judged, which makes
-  it a calibration set: the models produced **zero false accepts** (67/67 human
-  agreement on their accepts) and were somewhat too strict, recalling 87% of
-  what the human accepted. That is why model verdicts are treated as usable
-  rather than provisional — see
-  [`reports/17_cospeech_gesture.md`](reports/17_cospeech_gesture.md) §4.
-- **Packaged for downstream use:** `export/clips_verified.csv` (875 clips /
-  7.3 h, every file human- or model-reviewed and accepted) and
-  `export/clips_candidate.csv` (72,728 clips / 606 h, gate-passing and
-  unreviewed, estimated **80%** precision, Wilson 95% CI 71–87%). Start at
-  [`docs/using_the_subset.md`](docs/using_the_subset.md).
-- **To extend it:** open the review app and work down the queue. Human verdicts
-  supersede model ones on the items you reach (last write wins), disagreements
-  are flagged `contested`, and `seamless-curation manifest` folds it all in. The
-  candidate pool is fifty times larger than what has been reviewed, so accepted
-  hours grow roughly linearly with review time at about **46 seconds of accepted
-  data per file looked at**; reviewing all of it would yield roughly 407 hours.
+- **Tier-1 gates:** 414,504 windows qualify (17.1%) → **73,883 candidate clips /
+  615.7 hours** over 31,815 files and 3,724 participants.
+- **Tier-2 qualification:** **50,741 clips / 422.8 hours** over 24,204 files and
+  3,504 participants. This is `accepted_clips.csv`, produced with no reviewer.
+- **Measured accuracy.** Against 100 independently human-reviewed files (all of
+  which had passed tier 1, so this is tier 2's own accuracy): **precision
+  0.936, recall 0.948**, catching 8 of 13 files the human rejected. The
+  do-nothing baseline — accept every tier-1 candidate — is precision 0.904.
+- **Development labels retained:** 686 verdicts, of which 100 are human and were
+  taken with audio. `reviewed_clips.csv` holds 1,030 clips / 8.6 hours.
+
+Live numbers: `outputs/vibes_upper_body_v1/manifest_summary.json`. The
+calibration evidence is
+[`reports/18_automated_qualification.md`](reports/18_automated_qualification.md).
 
 ---
 
@@ -113,40 +98,31 @@ instead of 19 px per hand.
 ```bash
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 VIBES=/simurgh/group/lw29/conda/envs/ViBES/bin/python
-alias sc="$VIBES -m seamless_curation --config configs/vibes_upper_body.yaml"
+alias sc="$VIBES -m seamless_curation.cli --config configs/vibes_upper_body.yaml"
 
 sc population                                    # eligible files, from the M-1 inventory
 sbatch --array=0-511%80 slurm/scan.sbatch        # measure every eligible file
 sc gather                                        # concatenate shards, refusing gaps
-sc select                                        # apply gates, choose candidates
-SC_CARD_ONLY=1 sbatch --array=0-255%80 slurm/render.sbatch
-sc review --port 8765                            # review; verdicts land on disk
-sc manifest                                      # fold verdicts into the manifest
-sc export                                        # package both tiers + a dataset card
+sc select                                        # tier-1 gates, choose candidate clips
+sc qualify                                       # tier-2 decision: score, flag, accept
+sc manifest                                      # write accepted_clips.csv
+sc export                                        # package + dataset card
+sc verify --sample 60                            # read sampled rows back out of the release
 sc stats                                         # regenerate the run report
 ```
 
-A second reviewer working outside the app — offline, or a model-assisted
-pre-screen — takes the same queue as a list and hands its results back:
+Only `scan` needs a cluster; everything after it is seconds of pandas over
+parquet. **Re-tuning a tier-2 threshold costs one `sc qualify` run and reads no
+media** — edit the `qualify:` block in the config and re-run.
+
+Development-only, not part of producing the manifest:
 
 ```bash
-sc queue --unreviewed --format json > work.json  # items still needing a verdict
-sc import-verdicts verdicts.jsonl                # append them to the same log
+SC_CARD_ONLY=1 sbatch --array=0-255%80 slurm/render.sbatch   # review cards
+sc review --port 8765                            # label items to calibrate against
+sc queue --unreviewed --format json > work.json  # or label them offline
+sc import-verdicts verdicts.jsonl
 ```
-
-Run nothing heavy on a login node — every step above is either a Slurm job or a
-few seconds of pandas. Review over an SSH tunnel:
-
-```bash
-ssh -N -L 8765:localhost:8765 <cluster-host>     # then open http://localhost:8765/
-```
-
-The server binds `127.0.0.1` only. Participant media never leaves the cluster:
-`artifacts/` is mode 0700, its contents 0600, and both `artifacts/` and
-`outputs/` are git-ignored. On this cluster `artifacts/` is a symlink to
-`/simurgh/group/lw29/seamless_curation_artifacts` — the home export is 20 GB and
-review artefacts run to about 1 GB per thousand reviewed files — following the
-same pattern as the `datasets/` and `model_files/` symlinks.
 
 ---
 
@@ -157,98 +133,59 @@ same pattern as the `datasets/` and `model_files/` symlinks.
 | `population` | M-1 inventory parquet | `population.parquet` | seconds |
 | `scan` | NPZ + JSON per file | `scan_shards/*.parquet` | ~1.0 s/file, 512-task array |
 | `gather` | shards | `windows.parquet`, `scan_files.parquet` | ~1 min |
-| `select` | `windows.parquet` | `candidates.parquet`, `review_manifest.csv`, `gate_funnel.csv` | seconds |
-| `render` | manifest + media | `artifacts/<run>/clips/*.card.png`, `*.clip.mp4` | ~7 s/card, ~30 s/clip |
-| `review` | cards + clips | `review_verdicts.jsonl` | human time |
-| `queue` | manifest + verdicts | the work list, for an offline reviewer | seconds |
-| `manifest` | candidates + verdicts | `accepted_clips*.csv` | seconds |
-| `export` | manifests + candidates | `export/clips_{verified,candidate}.csv`, `DATASET.md` | seconds |
-| `verify` | manifest + source tree | a pass/fail report on sampled rows | seconds |
+| `select` | `windows.parquet` | `candidates.parquet`, `gate_funnel.csv` | seconds |
+| `qualify` | `candidates.parquet` | `qualified_clips.parquet`, `qualification_funnel.csv` | seconds |
+| `manifest` | candidates + qualification | `accepted_clips.csv` (+ reviewed subset) | seconds |
+| `export` | manifests | `export/clips_*.csv`, `DATASET.md` | seconds |
+| `verify` | manifest + source tree | pass/fail on sampled rows | seconds |
 | `stats` | everything above | `run_report.md` | seconds |
+| `render` | manifest + media | review cards and clips | *development* |
+| `review` / `queue` / `import-verdicts` | cards | `review_verdicts.jsonl` | *development* |
 
-Re-tuning a threshold costs one `select` run and reads no media. Changing a
-*measurement* changes the scan fingerprint, and every shard recomputes.
+Changing a *measurement* changes the scan fingerprint and every shard
+recomputes. The fingerprint hashes the measurement parameters **and the source
+of `gesture.py` and `smplh_kinematics.py`**, rather than a version number
+someone has to remember to bump; the shard marker also records *which files* it
+covered, so a `--limit` smoke test cannot make the real scan a no-op. `gather`
+refuses to proceed if any shard is missing.
 
-The fingerprint is a hash of the measurement parameters **and of the source of
-`gesture.py` and `smplh_kinematics.py`**, rather than a version number someone
-has to remember to bump; the marker also records *which files* the shard
-covered, so a `--limit` smoke test cannot make the real scan a no-op and a
-change of `--tasks` cannot leave a stale partition in place. `gather` then
-refuses to proceed if any shard is missing rather than reporting a fraction of
-the corpus as the whole of it.
+---
 
-### 1. Population
+## How the decision is made
 
-`corpus.py`. Eligibility is only about whether a file can be measured and
-whether its source could support upper-body training at all: complete bundle,
-readable video, a raster whose released SMPL-H is not corrupted, an annotation
-grid that matches its container, and an interaction type that contains speech.
-Nothing about posture, legs, or framing.
+Full detail, including every threshold and its justification, is in
+[`docs/pipeline.md`](docs/pipeline.md). In brief:
 
-118,570 of 129,370 participant files are eligible (7,550 participant-hours).
+**Tier 1** (`gates.py`, 18 clauses) asks *is this window usable* — tracking
+integrity, enough speech, motion that is not jitter, arms that visit more than
+one posture. It is deliberately permissive, because it runs over 2.4 M windows
+before selection and cannot tell a modest gesturer from a non-gesturer without
+deleting both.
 
-### 2. Scan
+**Tier 2** (`qualify.py`, 9 disqualifiers + a score) makes the accept/reject
+call that a reviewer used to make. The split exists because that judgement is
+one of *degree*, and degree can only be judged after eligibility. On 100
+human-labelled files that had all already passed tier 1, the reviewer's
+judgement proved predictable from measurements the scan already produces —
+`wrist_height_p75_mm` alone separates accept from reject at AUC 0.85.
 
-`gesture.py` + `smplh_kinematics.py`. One pass per file produces a row per
-sliding 30-second window (10 s hop). Forward kinematics is pure NumPy against
-the zero-beta neutral model — 0.12 s for a 6,900-frame file, against ~2 s
-through `smplx` on CPU — so the scan is I/O bound and the whole corpus takes
-about two and a half hours of wall time on a 512-task array, NFS-bound.
+Two design choices carry most of the weight:
 
-Everything is measured in the **torso frame**: origin at the shoulder midpoint,
-axes from the shoulder line and the pelvis-to-neck axis. A participant who
-sways, turns or steps moves the frame with them, so global body motion cannot be
-counted as gesture.
+- **No gate is a jitter-magnitude gate.** 106 of 135 candidate quality signals
+  correlate with gesture activity at |rho| up to 0.903, so gating on them is
+  arithmetically a gate on how much the person gestured. The two noise guards
+  used instead compare *independent channels* and test *direction*.
+- **Peak wrist excursion is excluded from the score.** It separates the labelled
+  set backwards — rejects have larger peak excursion than accepts — because it
+  rewards one big isolated adjustment. `V02_S5281_I00000280_P5272` is top-decile
+  on every activity measure and its entire score comes from twice adjusting a
+  beanie.
 
-### 3. Gates and selection
-
-`gates.py`. Eighteen clauses in three groups — tracking quality, co-speech
-gesture, posture variety — each named, each with the reason it sits where it
-does in its docstring. `gate_funnel.csv` reports the first failing clause per
-window, so the cost of every clause is visible.
-
-Qualifying windows are turned into non-overlapping clips (at most 8 per file),
-and clips are grouped into **review items**, one per file. The review queue is a
-stratified round robin over participants, so reviewing a prefix gives a set
-spread across people, vendors and conditions rather than the most animated three
-participants in the corpus.
-
-### 4. Review artefacts
-
-`review_card.py` and `review_renderer.py`. Two artefacts per review item:
-
-- **`<id>.card.png`** — twelve moments sampled from inside the spans that would
-  be accepted, each as an upper-body video crop with the released 2D arms drawn
-  on it, paired with the pelvis-frame SMPL-H pose at the same instant; plus a
-  whole-recording timeline of own speech, partner speech, arm speed, detected
-  gesture episodes and the accepted spans.
-- **`<id>.clip.mp4`** — 30 s of the item's median-scoring accepted span with the
-  participant's own audio muxed, for the synchronisation check.
-
-### 5. Review
-
-`review_app.py`, `review_store.py`, and the rubric in
-[`docs/review_rubric.md`](docs/review_rubric.md). A keyboard-driven page on
-localhost: `A` accept, `R` then a digit to reject with a reason, `U` unsure, `V`
-to play the clip with sound. Every verdict is POSTed and appended to
-`review_verdicts.jsonl` before the UI advances.
-
-The log is append-only and keyed by review item, so a verdict survives
-re-rendering, several reviewers can work at once, and changing your mind is a new
-record rather than an edit. `resolve()` takes the last write per item and flags
-items where reviewers disagreed.
-
-### 6. Manifest
-
-`manifest.py`. An inner join between the candidate clips and the accepted
-verdicts — so there is no code path in which an unreviewed clip reaches the
-output. `accepted_clips.csv` is the training manifest;
-`accepted_clips_with_audio.csv` is the subset whose reviewer played the clip
-with sound.
-
-Every row carries `reviewer`, `verdict_source` (`human` or a model identifier)
-and `review_evidence`, so how a subset was verified is a column rather than a
-claim.
+Every clip, kept or dropped, carries its `gesture_quality`, four dimension
+scores, and a `flags` string listing **every** clause it failed. Both funnels
+report every clause including ones that fired zero times, because "0" and
+"absent" are different facts and a mis-wired clause looks exactly like an
+absent one.
 
 ---
 
@@ -275,9 +212,11 @@ src/seamless_curation/   the pipeline; every module's docstring says why it exis
 configs/                 one YAML per run, plus the M-1 inventory inputs
 slurm/                   two array jobs (scan, render) and the M-1 inventory jobs
 scripts/inventory_m1.py  the corpus census that population/ reads
-docs/review_rubric.md    the text every reviewer works from
-reports/                 the current report, and the v0 measurement rounds
-tests/                   153 tests, no dataset or model needed except where skipped
+docs/pipeline.md         every step: what, why, thresholds, limitations
+docs/using_the_subset.md written for a downstream user, assumes no pipeline knowledge
+docs/review_rubric.md    [development] the rubric the tier-2 clauses were derived from
+reports/                 the current reports, and the v0 measurement rounds
+tests/                   the acceptance suite; no dataset or model needed except where skipped
 NOTES.md                 surprises, dead ends, and open questions
 ```
 
@@ -291,6 +230,11 @@ Fixtures are synthetic bundles with a known answer — a wrist that traces a kno
 arc while speech is on, or one that only shakes in place — so the suite runs
 without the 40 TB source mount. Tests that need the research-licensed SMPL-H
 model skip if it is not staged.
+
+`tests/test_automated_qualification.py` is the acceptance suite. Each of the
+five exclusions is built as a bundle whose motion is exactly that failure, run
+through real measurement and both gate tiers, and asserted to be rejected *with
+the right reason* — alongside the positive cases, including the subtle one.
 
 `tests/test_regressions.py` holds one test per defect an adversarial review of
 this pipeline confirmed, each naming the wrong behaviour it would produce. The

@@ -17,6 +17,7 @@ import yaml
 
 from .gates import Gates
 from .gesture import GestureParams
+from .qualify import Qualifiers
 from .scan import ScanSettings
 
 DEFAULT_CONFIG = Path("configs/vibes_upper_body.yaml")
@@ -34,6 +35,7 @@ class RunConfig:
     scan: ScanSettings
     scan_tasks: int
     gates: Gates
+    qualifiers: Qualifiers
     max_clips_per_file: int
     max_files_per_participant: int
     select_seed: str
@@ -61,6 +63,22 @@ class RunConfig:
     @property
     def candidates_path(self) -> Path:
         return self.output_root / "candidates.parquet"
+
+    @property
+    def qualified_path(self) -> Path:
+        """Every candidate clip with its tier-2 scores, flags and verdict."""
+
+        return self.output_root / "qualified_clips.parquet"
+
+    @property
+    def qualification_funnel_path(self) -> Path:
+        return self.output_root / "qualification_funnel.csv"
+
+    @property
+    def reviewed_clips_path(self) -> Path:
+        """The manually reviewed subset. A development artefact, not production."""
+
+        return self.output_root / "reviewed_clips.csv"
 
     @property
     def review_manifest_path(self) -> Path:
@@ -99,6 +117,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> RunConfig:
     select_block = dict(raw.get("select") or {})
     render_block = dict(raw.get("render") or {})
     gate_block = dict(raw.get("gates") or {})
+    qualify_block = dict(raw.get("qualify") or {})
 
     unknown = set(gate_block) - set(Gates().as_dict())
     if unknown:
@@ -107,7 +126,12 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> RunConfig:
     if unknown:
         raise ValueError(f"{path}: unknown gesture keys {sorted(unknown)}")
 
+    unknown = set(qualify_block) - set(Qualifiers().as_dict())
+    if unknown:
+        raise ValueError(f"{path}: unknown qualify keys {sorted(unknown)}")
+
     gates = replace(Gates(), **gate_block) if gate_block else Gates()
+    qualifiers = replace(Qualifiers(), **qualify_block) if qualify_block else Qualifiers()
     gesture = replace(GestureParams(), **gesture_block) if gesture_block else GestureParams()
 
     return RunConfig(
@@ -126,6 +150,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> RunConfig:
         ),
         scan_tasks=int(scan_block.get("tasks", 512)),
         gates=gates,
+        qualifiers=qualifiers,
         max_clips_per_file=int(select_block.get("max_clips_per_file", 8)),
         max_files_per_participant=int(select_block.get("max_files_per_participant", 12)),
         select_seed=str(select_block.get("seed", "vibes")),

@@ -2,7 +2,10 @@
 
 A running log of things that were not obvious and cost time to find out. It is
 not a design document and not a record of decisions — the current pipeline is
-described in `README.md` and justified in `reports/17_cospeech_gesture.md`.
+described step by step in `docs/pipeline.md`, summarised in `README.md`, and
+justified in `reports/17_cospeech_gesture.md` (measurement design) and
+`reports/18_automated_qualification.md` (the automated accept/reject decision
+that replaced manual review on 2026-09-21).
 
 Sections are in the order they were written, oldest first. The Session 1 and 2
 entries describe the corpus and the released annotations, and almost all of them
@@ -906,3 +909,53 @@ Only **sitting, framing, and static hands** remain, all at file level.
   rather than a response to being spoken to.
 - Whether the 30-second window is the right training unit for ViBES, or whether
   the manifest should name longer contiguous spans and let the loader cut them.
+
+## Removing manual review from production (2026-09-21)
+
+Things that were not obvious while replacing the reviewer with measurement.
+
+**The gates that mattered were the ones that never fired.** `step_cosine_p50`
+had a tier-1 floor of −0.30 against a candidate-pool 10th percentile of +0.08,
+and `wrist_height_p75_mm` a floor of −300 mm against a 10th percentile of
+−242 mm. Both were correct measures sitting below the data, doing nothing. They
+turned out to be the two best predictors of a human verdict (AUC 0.81 and 0.85).
+The lesson generalises: a clause whose threshold is outside the data's range is
+not a conservative clause, it is an absent one.
+
+**A funnel that hides zeros hides bugs.** `gate_funnel` was dropping any clause
+with a zero count, so `hand_pose_frozen` — which fires 0 times in 2.42 M windows
+— was simply missing from the table. "0" and "absent" look identical that way,
+and a mis-wired clause looks exactly like a clause that never matched. Now every
+clause is always listed.
+
+**One continuous sweep is one episode.** The synthetic fixtures modelled gesture
+as a 30-second sine wave, which the episode clauses correctly reject — real
+co-speech gesture is bursts. The fixtures had to gate the carrier to the speech
+segments before any positive test could pass. The first version of the new test
+suite "failed" for entirely correct reasons.
+
+**Synthetic hand poses resting at exactly zero are bit-identical.** That trips
+`hand_frozen_frac`, which exists to detect a tracker duplicating frames. Real
+fits never produce bit-identical consecutive frames. The fixtures now carry a
+1e-4 rad tremor — about a hundredth of a millimetre at the fingertip.
+
+**Peak amplitude is evidence against, not for.** `wrist_excursion_p90_mm`
+separates the labelled set *backwards*: rejects have larger peak excursion than
+accepts. Rewarding big movements rewards one dramatic isolated adjustment, which
+is the failure mode the brief names. It is excluded from the score.
+
+**A weighted score cannot see structure.** The single-brief-adjustment fixture
+scores 0.419 against a 0.34 accept threshold — the score would take it. One
+emphatic movement looks good on posture and vigour, and a mean has no way to
+represent "all of this happened at once". That is why the disqualifiers are a
+separate layer rather than more terms in the score.
+
+**Two differently-sampled label sets give two different F1 optima** (0.32 on the
+representative set, 0.00 on the boundary-enriched one). Neither is real. The
+threshold sits on a plateau the data can resolve and is chosen by a stated rule;
+pretending it was fitted would claim a precision 224 labels do not support.
+
+**`import numbers` is not safe in a scratch directory.** A helper script named
+`numbers.py` shadowed the stdlib module and broke numpy's import, from inside
+`pandas`. Cost ten minutes of reading a traceback that had nothing to do with
+the code under test.

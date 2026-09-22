@@ -234,13 +234,14 @@ def apply_gates(windows: pd.DataFrame, gates: Gates) -> pd.DataFrame:
 def gate_funnel(gated: pd.DataFrame) -> pd.DataFrame:
     """Counts by first-failing clause, in clause order, plus the pass row."""
 
+    # Every clause is listed, including those that never fire. A clause that
+    # counts zero is not the same fact as a clause that is missing: the first
+    # says "nothing in this corpus looked like that", the second says nothing
+    # at all, and a mis-wired clause looks exactly like an absent one. The
+    # funnel is the diagnostic surface, so it reports the full set.
     order = ["unmeasurable"] + [label for *_, label in ALL_CLAUSES]
     counts = gated["fail_reason"].value_counts(dropna=True)
-    rows = [
-        {"stage": label, "windows": int(counts.get(label, 0))}
-        for label in order
-        if counts.get(label, 0) or label in {"unmeasurable"}
-    ]
+    rows = [{"stage": label, "windows": int(counts.get(label, 0))} for label in order]
     rows.append({"stage": "qualifies", "windows": int(gated["qualifies"].sum())})
     total = int(len(gated))
     for row in rows:

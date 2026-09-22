@@ -4,6 +4,20 @@ Date: 2026-09-01. Supersedes every detector in
 [`v0_measurement_rounds/`](v0_measurement_rounds/README.md); that directory's
 `README` says which of its findings are still load-bearing.
 
+> **Partly superseded, 2026-09-21.** Manual review has been removed from the
+> production pipeline and replaced by an automated tier-2 decision. Sections
+> **1–4** remain current: they are the measurement design — the torso frame, the
+> speed-and-travel rule, episode structure, the activity-confound finding, and
+> the posture-variety measures — and all of it is still what the pipeline
+> computes. Sections **5–6** describe the review-driven subset as it stood on
+> 2026-09-21 and are now a historical record of the labelled set, not a
+> description of the production output.
+>
+> For the pipeline as it runs today, see
+> [`../docs/pipeline.md`](../docs/pipeline.md); for the calibration and
+> validation of the automated decision that replaced review, see
+> [`18_automated_qualification.md`](18_automated_qualification.md).
+
 This round answers one question the previous fifteen did not:
 
 > whether the person actually makes meaningful hand and arm gestures while
@@ -368,12 +382,16 @@ staleness can recur.
 
 ---
 
-## 5. The accepted subset
+## 5. The reviewed subset *(historical — see the note at the top)*
 
-Live numbers are in `outputs/vibes_upper_body_v1/manifest_summary.json`, which
-`seamless-curation manifest` regenerates from the verdict log. This is the
-snapshot at the time of writing, and it will only grow: every figure here is a
-function of how many items have been looked at.
+These are the review-driven numbers as of 2026-09-21, before manual review was
+removed from the production path. They are retained because this is the
+labelled set the automated decision is calibrated and validated against, and
+§5.1 in particular is the evidence that made replacing review defensible.
+
+The production manifest is no longer built this way.
+`outputs/vibes_upper_body_v1/reviewed_clips.csv` is where this subset now
+lives; `accepted_clips.csv` is the automated output.
 
 | | |
 |---|---:|

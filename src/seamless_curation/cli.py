@@ -6,11 +6,12 @@ them can be re-run alone.
 ===============  =========================================================
 ``population``   eligible participant files, from the M-1 inventory
 ``scan``         window-resolution gesture measurement (Slurm array)
-``select``       apply gates, choose candidate review clips
+``select``       apply gates, choose candidate clips
+``qualify``      tier-2 automated acceptance: score, flag, decide
 ``render``       review card + review clip per candidate (Slurm array)
-``review``       serve the review app and persist verdicts
-``queue``        list the review queue for a reviewer that is not the app
-``manifest``     fold verdicts into the accepted manifests
+``review``       [development] serve the review app and persist verdicts
+``queue``        [development] list the review queue for an offline reviewer
+``manifest``     write the accepted subset (automated) + any reviewed subset
 ``export``       package the subset + dataset card for a downstream project
 ``verify``       read sampled manifest rows back out of the source tree
 ``stats``        census and funnel tables for the report
@@ -290,6 +291,32 @@ def cmd_import_verdicts(config: RunConfig, args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------------- qualify
+def cmd_qualify(config: RunConfig, args: argparse.Namespace) -> int:
+    """Tier-2 automated acceptance, written out without touching the manifests.
+
+    ``manifest`` runs this too; this stage exists so a threshold can be moved
+    and its effect inspected -- funnel, score distribution, agreement with any
+    verdicts on hand -- without rewriting the training manifest first.
+    """
+
+    from .qualify import qualification_funnel, qualify, summarise
+
+    candidates = pd.read_parquet(config.candidates_path)
+    scored = qualify(candidates, config.qualifiers)
+    scored.to_parquet(config.qualified_path)
+    funnel = qualification_funnel(scored)
+    funnel.to_csv(config.qualification_funnel_path, index=False)
+
+    summary = summarise(scored)
+    summary["qualifiers"] = config.qualifiers.as_dict()
+    summary["funnel"] = {row.clause: int(row.clips_failed_here) for row in funnel.itertuples()}
+    _write_json(config.output_root / "qualification_summary.json", summary)
+    print(json.dumps(summary, indent=2, default=str))
+    print(f"\nwrote {config.qualified_path}\n      {config.qualification_funnel_path}")
+    return 0
+
+
 # -------------------------------------------------------------------- export
 def cmd_export(config: RunConfig, args: argparse.Namespace) -> int:
     """Package both tiers plus a dataset card for a downstream project."""
@@ -334,6 +361,7 @@ STAGES = {
     "scan": cmd_scan,
     "gather": cmd_gather,
     "select": cmd_select,
+    "qualify": cmd_qualify,
     "render": cmd_render,
     "review": cmd_review,
     "queue": cmd_queue,
@@ -363,6 +391,8 @@ def build_parser() -> argparse.ArgumentParser:
     gather.add_argument("--tasks", type=int)
 
     sub.add_parser("select", help="apply gates and choose candidate clips")
+
+    sub.add_parser("qualify", help="tier-2 automated acceptance; score and flag every clip")
 
     render = sub.add_parser("render", help="render review artefacts for one shard")
     render.add_argument("--task-index", type=int, default=0)

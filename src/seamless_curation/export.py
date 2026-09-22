@@ -1,26 +1,28 @@
 """Stage 7: package the subset for a downstream project.
 
-The manifest stages produce the *decision* — which frames of which files are
-accepted. This stage produces the **handover**: the same rows with every path a
-loader needs already resolved, split into two tiers with an honest statement of
-what each one is worth, plus a dataset card that can be read on its own.
+The decision stages produce *which frames are accepted*. This stage produces the
+**handover**: the same rows with every source path resolved, plus a dataset card
+that can be read on its own by someone who will never run this pipeline.
 
-Two tiers, because they answer different questions:
+Two files, and the difference between them is how the decision was made:
 
-``clips_verified.csv``
-    Every clip is in a file a reviewer looked at individually and accepted.
-    This is the subset the PI asked for. It is small because review is the
-    bottleneck, not because the data is.
+``clips_accepted.csv``
+    The production subset. Every row passed tier-1 gates and tier-2
+    qualification. Produced entirely by measurement, with no human or model
+    judgement anywhere in its causal path, which is what makes it reproducible
+    from the source tree and a config file alone.
 
-``clips_candidate.csv``
-    Passed all eighteen automated gates and has *not yet* been reviewed. Files
-    that were reviewed and rejected are excluded, so this is strictly better
-    than raw gate output. Its precision is estimated from the reviewed sample
-    and reported in the card and in ``summary.json`` — it is an estimate with a
-    confidence interval, not a promise about any individual clip.
+``clips_reviewed.csv``
+    The subset a reviewer also looked at and accepted. A *development* artefact:
+    it is the labelled set the automated decision is validated against, and it
+    carries a stronger per-clip guarantee for anyone who wants one. It is small,
+    and it will stay small, because review does not scale.
 
-Nothing here copies, moves or modifies the release. Both files are lists of
-frame ranges; :mod:`seamless_curation.dataset` turns a row into arrays.
+The card reports the automated decision's measured agreement with the reviewed
+set rather than asserting a quality level, so a downstream reader can see what
+the automation is worth instead of taking it on trust.
+
+Nothing here copies, moves or modifies the release.
 """
 
 from __future__ import annotations
@@ -47,13 +49,21 @@ PATH_COLUMNS: tuple[str, ...] = ("pose_path", "audio_path", "video_path", "annot
 
 MEASURE_COLUMNS: tuple[str, ...] = (
     "speech_seconds", "gesture_frac_speech", "speech_segments_covered", "episode_count_speech",
-    "wrist_excursion_p90_mm", "elbow_excursion_p90_mm", "gesture_speech_ratio",
-    "posture_spread_mm", "wrist_height_p75_mm", "hands_together_frac", "arm_abduction_p75_deg",
-    "sync_r", "sync_lag_s", "consistency_r", "smplh_valid_frac", "smplh_longest_invalid_s",
-    "hand_frozen_frac", "clip_score",
+    "episode_median_s", "wrist_excursion_p90_mm", "elbow_excursion_p90_mm", "wrist_range_mm",
+    "gesture_speech_ratio", "posture_spread_mm", "wrist_height_p75_mm", "hands_together_frac",
+    "arm_abduction_p75_deg", "arm_speed_speech_p50_mm_s", "articulation_ratio",
+    "step_cosine_p50", "sync_r", "sync_lag_s", "consistency_r", "smplh_valid_frac",
+    "smplh_longest_invalid_s", "hand_frozen_frac", "clip_score",
 )
 
-PROVENANCE_COLUMNS: tuple[str, ...] = ("tier", "reviewed", "reviewer", "verdict_source", "review_evidence")
+#: Tier-2 scores, carried so a row can be re-thresholded without re-running.
+SCORE_COLUMNS: tuple[str, ...] = (
+    "gesture_quality", "dim_posture", "dim_persistence", "dim_vigour", "dim_integrity", "flags",
+)
+
+PROVENANCE_COLUMNS: tuple[str, ...] = (
+    "tier", "decision_source", "reviewed", "reviewer", "verdict_source", "review_evidence",
+)
 
 
 def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
@@ -130,51 +140,57 @@ def build_export(config: RunConfig) -> dict[str, Any]:
     out = config.output_root / "export"
     out.mkdir(parents=True, exist_ok=True)
 
-    candidates = pd.read_parquet(config.candidates_path)
-    resolved = VerdictStore(config.verdict_log).resolve()
+    def load(path: Path) -> pd.DataFrame:
+        return load_manifest(path) if path.exists() else pd.DataFrame()
 
-    verified = (
-        load_manifest(config.accepted_clips_path)
-        if config.accepted_clips_path.exists()
-        else pd.DataFrame()
-    )
-    if not verified.empty:
-        verified = _ensure_fps(verified, config)
-        verified = _add_paths(_shape(verified, "verified", True), config.source_root)
-    verified.to_csv(out / "clips_verified.csv", index=False)
+    accepted = load(config.accepted_clips_path)
+    if len(accepted):
+        accepted = _add_paths(_shape(accepted, "accepted", False), config.source_root)
+    accepted.to_csv(out / "clips_accepted.csv", index=False)
 
-    judged = set(resolved["review_item_id"]) if not resolved.empty else set()
-    pool = candidates.loc[~candidates["review_item_id"].isin(judged)].copy()
-    pool = _ensure_fps(pool, config)
-    pool = _add_paths(_shape(pool, "candidate", False), config.source_root)
-    pool.to_csv(out / "clips_candidate.csv", index=False)
+    reviewed = load(config.reviewed_clips_path)
+    if len(reviewed):
+        reviewed = _add_paths(_shape(reviewed, "reviewed", True), config.source_root)
+    reviewed.to_csv(out / "clips_reviewed.csv", index=False)
 
-    precision = _precision_estimate(resolved) if not resolved.empty else {}
     hours = lambda f: round(float(f["window_seconds"].sum() / 3600), 2) if len(f) else 0.0
+    people = lambda f: int(
+        (f["vendor"].astype(str) + ":" + f["participant_id"].astype(str)).nunique()
+    ) if len(f) else 0
+
+    agreement = {}
+    summary_path = config.output_root / "manifest_summary.json"
+    if summary_path.exists():
+        try:
+            agreement = json.loads(summary_path.read_text(encoding="utf-8")).get(
+                "agreement_with_review", {}
+            )
+        except (OSError, ValueError):
+            agreement = {}
+
     summary: dict[str, Any] = {
         "run_id": config.run_id,
         "source_root": str(config.source_root),
-        "verified": {
-            "clips": int(len(verified)), "hours": hours(verified),
-            "files": int(verified["file_id"].nunique()) if len(verified) else 0,
-            "participants": int(
-                (verified["vendor"].astype(str) + ":" + verified["participant_id"].astype(str)).nunique()
-            ) if len(verified) else 0,
-            "path": str(out / "clips_verified.csv"),
+        "decision": "automated",
+        "accepted": {
+            "clips": int(len(accepted)), "hours": hours(accepted),
+            "files": int(accepted["file_id"].nunique()) if len(accepted) else 0,
+            "participants": people(accepted),
+            "path": str(out / "clips_accepted.csv"),
         },
-        "candidate": {
-            "clips": int(len(pool)), "hours": hours(pool),
-            "files": int(pool["file_id"].nunique()) if len(pool) else 0,
-            "participants": int(
-                (pool["vendor"].astype(str) + ":" + pool["participant_id"].astype(str)).nunique()
-            ) if len(pool) else 0,
-            "path": str(out / "clips_candidate.csv"),
-            "estimated_precision": precision,
+        "reviewed": {
+            "clips": int(len(reviewed)), "hours": hours(reviewed),
+            "files": int(reviewed["file_id"].nunique()) if len(reviewed) else 0,
+            "participants": people(reviewed),
+            "path": str(out / "clips_reviewed.csv"),
         },
-        "reviewed_items": int(len(resolved)),
+        "agreement_with_review": agreement,
+        "qualifiers": config.qualifiers.as_dict(),
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    (out / "DATASET.md").write_text(_dataset_card(config, summary, verified, pool), encoding="utf-8")
+    (out / "DATASET.md").write_text(
+        _dataset_card(config, summary, accepted, reviewed), encoding="utf-8"
+    )
     return summary
 
 
@@ -192,45 +208,86 @@ def _vendor_table(frame: pd.DataFrame) -> str:
 
 
 def _dataset_card(
-    config: RunConfig, summary: dict[str, Any], verified: pd.DataFrame, pool: pd.DataFrame
+    config: RunConfig, summary: dict[str, Any], accepted: pd.DataFrame, reviewed: pd.DataFrame
 ) -> str:
-    precision = summary["candidate"].get("estimated_precision") or {}
-    estimate = precision.get("estimate")
-    ci = precision.get("ci95") or [None, None]
-    pct = f"{estimate:.0%}" if estimate is not None else "not yet estimated"
-    band = f"{ci[0]:.0%}–{ci[1]:.0%}" if ci[0] is not None else "n/a"
-    v, c = summary["verified"], summary["candidate"]
-    return f"""# Seamless Interaction — co-speech upper-body subset (`{config.run_id}`)
+    a, r = summary["accepted"], summary["reviewed"]
+    human = (summary.get("agreement_with_review") or {}).get("human") or {}
+    if human:
+        agreement = (
+            f"Measured against {human['n']} independently reviewed files, the automated "
+            f"decision has **precision {human['precision']:.3f}** (of the files it accepts, "
+            f"this share were also accepted by a human reviewer) and **recall "
+            f"{human['recall']:.3f}** (of the files a human accepted, this share it also "
+            f"accepts). It catches {human['true_reject']} of "
+            f"{human['true_reject'] + human['false_accept']} files the reviewer rejected."
+        )
+    else:
+        agreement = "No reviewed labels are present in this run, so no agreement is reported."
+
+    q = config.qualifiers
+    return f"""# Seamless Interaction - co-speech upper-body subset (`{config.run_id}`)
 
 Two CSV files. Each row is **a frame range of one participant recording**, not a
 copy of it: the release at `{config.source_root}` is never modified, and every
 row points back into it. Load a row with
 `seamless_curation.dataset.load_clip`, which reads only the frames the row names.
 
-| file | clips | hours | files | participants | what it is |
+| file | clips | hours | files | participants | how it was decided |
 |---|---:|---:|---:|---:|---|
-| `clips_verified.csv` | {v['clips']} | {v['hours']} | {v['files']} | {v['participants']} | a reviewer watched and accepted each one |
-| `clips_candidate.csv` | {c['clips']} | {c['hours']} | {c['files']} | {c['participants']} | passed all automated gates, not yet reviewed |
+| `clips_accepted.csv` | {a['clips']} | {a['hours']} | {a['files']} | {a['participants']} | fully automated |
+| `clips_reviewed.csv` | {r['clips']} | {r['hours']} | {r['files']} | {r['participants']} | automated + a reviewer looked at it |
 
 ## Which one to use
 
-**Start with `clips_verified.csv`.** Every clip in it belongs to a file a human
-inspected individually against `docs/review_rubric.md` — valid upper-body SMPL-H,
-arms and hands genuinely moving during speech, motion natural rather than
-tracking noise, gesture synchronised with speech.
+**Use `clips_accepted.csv`.** It is the production subset and it is what the
+pipeline is for. Every row passed eighteen tier-1 eligibility gates and then
+nine tier-2 disqualifiers plus a composite gesture-quality threshold. No human
+or model judgement is anywhere in its causal path, so it is reproducible from
+the source tree and a config file.
 
-**Use `clips_candidate.csv` when you need volume more than you need certainty.**
-It has passed the same eighteen automated gates and excludes every file a
-reviewer rejected, but nobody has looked at these individually. Measured against
-{precision.get('reviewed_by_human', 0)} human-reviewed items drawn from the same
-pool, **about {pct} of them would survive review** (Wilson 95% interval {band}).
-The residual failure is overwhelmingly one mode: a participant whose hands move
-enough to pass the thresholds but who is not really gesturing — hands clasped at
-the waist, or repeatedly adjusting a hat. That is noise in the training signal,
-not corrupt data: the SMPL-H parameters are still valid and still synchronised.
+`clips_reviewed.csv` is a development artefact: the labelled set the automated
+decision was calibrated and validated against. It is much smaller and will stay
+that way. Use it only if you specifically need per-clip human sign-off.
 
-For preliminary training runs where more data wins, the candidate tier is the
-right choice. For anything reported as a curated subset, use the verified tier.
+{agreement}
+
+## How a clip earned its place
+
+Motion is measured in a **torso frame** (origin at the shoulder midpoint, axes
+from the shoulder line and the pelvis-to-neck direction), so swaying, turning
+and stepping cannot be counted as gesture. Gesture is measured **only inside the
+participant's own voice-activity segments**. A frame counts as gesturing only if
+the wrist has both speed (>=60 mm/s) and travel (>=35 mm within 0.5 s).
+
+Tier 2 then applies nine disqualifiers, each naming a pathology rather than a
+degree, and a composite score:
+
+| disqualifier | threshold | what it excludes |
+|---|---:|---|
+| `speech_seconds` | >= {q.min_speech_seconds:g} s | too little speech to judge |
+| `gesture_frac_speech` | >= {q.min_gesture_frac_speech:g} | hands static while speaking |
+| `wrist_height_p75_mm` | >= {q.min_wrist_height_p75_mm:g} mm | hands parked in the lap or at the sides |
+| `episode_count_speech` | >= {q.min_episodes_speech:g} | a single movement |
+| `episode_median_s` | >= {q.min_episode_median_s:g} s | a string of twitches |
+| `speech_segments_covered` | >= {q.min_speech_segments_covered:g} | gesture not sustained across utterances |
+| `articulation_ratio` | >= {q.min_articulation_ratio:g} | motion that is mostly whole-body |
+| `step_cosine_p50` | >= {q.min_step_cosine_p50:g} | tracker noise (direction, not magnitude) |
+| `consistency_r` | >= {q.min_consistency_r:g} | the two measurement channels disagree |
+
+The composite score combines four dimensions - posture, persistence, vigour and
+integrity - and must reach **{q.min_gesture_quality:g}**. It is a weighted mean, not a
+conjunction, so strength on several dimensions compensates for modesty on one.
+That is deliberate: it is what keeps a restrained but genuine gesturer in the
+set. Peak wrist excursion is **excluded** from the score, because it separated
+the labelled set backwards - it rewards one big isolated adjustment.
+
+Every row carries its own `gesture_quality`, the four `dim_*` scores and a
+`flags` string, so any decision can be traced and any threshold re-applied
+without re-running the pipeline:
+
+```python
+stricter = manifest[manifest.gesture_quality > 0.6]
+```
 
 ## Columns
 
@@ -238,49 +295,34 @@ right choice. For anything reported as a curated subset, use the verified tier.
 |---|---|
 | identity | `clip_id`, `review_item_id`, `file_id`, `vendor`, `label`, `split`, `session_id`, `participant_id`, `interaction_id`, `interaction_type` |
 | frames | `start_frame`, `end_frame`, `n_frames`, `start_s`, `window_seconds`, `fps` |
-| paths | `pose_path`, `audio_path`, `video_path`, `annotation_path` — all **relative to `source_root`** |
-| provenance | `tier`, `reviewed`, `reviewer`, `verdict_source`, `review_evidence` |
-| measures | the gate measurements for that window, so you can re-filter without re-running anything |
+| paths | `pose_path`, `audio_path`, `video_path`, `annotation_path` - all **relative to `source_root`** |
+| provenance | `tier`, `decision_source`, `reviewed` |
+| measures | every gate measurement for that window |
+| scores | `gesture_quality`, `dim_posture`, `dim_persistence`, `dim_vigour`, `dim_integrity`, `flags` |
 
-`split` is the **release's** train/dev/test split and is preserved unchanged.
-`participant_id` is unique only within a vendor; use `vendor + ":" + participant_id`
-as the participant key, which is what the participant counts above do.
+`split` is the **release's** train/dev/test split, preserved unchanged.
+`participant_id` is unique only within a vendor; use `vendor + ":" + participant_id`.
 
 ## Vendors
 
-Verified tier:
+Accepted tier:
 
-{_vendor_table(verified)}
-Candidate tier:
+{_vendor_table(accepted)}
+Reviewed tier:
 
-{_vendor_table(pool)}
-## What was measured
-
-All motion is expressed in a **torso frame** (origin at the shoulder midpoint,
-axes from the shoulder line and the pelvis-to-neck direction), so swaying,
-turning and stepping cannot be mistaken for gesture. Gesture is measured **only
-inside the participant's own VAD segments**. A frame counts as gesturing only if
-the wrist has both speed (≥60 mm/s) and travel (≥35 mm within 0.5 s), which is
-what stops jitter in place from qualifying.
-
-Every activity and posture measure is the **maximum over the two hands**, so
-one-handed gesturing is accepted (rubric decision 2026-09-21).
-
-Full rationale for each of the eighteen gates, including why no
-jitter-*magnitude* gate is used, is in `src/seamless_curation/gates.py` and
-`reports/17_cospeech_gesture.md`.
-
+{_vendor_table(reviewed)}
 ## Caveats worth knowing before you train
 
-1. **The verified tier is limited by review effort, not data.** The candidate
-   pool holds {c['hours']} more hours at roughly the quality stated above.
-2. **Windows from one file overlap in time only if they do not overlap at all** —
-   selection vetoes overlap, so clips from the same file are disjoint frame
-   ranges. Concatenating them is safe; they are not contiguous.
-3. **Per-participant caps are applied** (≤8 clips per file, ≤12 files per
+1. **Clips from one file are disjoint frame ranges, not contiguous.** Selection
+   vetoes overlap. Concatenating them is safe; they are not continuous.
+2. **Per-participant caps are applied** (<=8 clips per file, <=12 files per
    participant), so no single talkative participant dominates.
-4. **`charades` interactions and four raster formats are excluded** upstream, at
-   the population stage, for reasons in `src/seamless_curation/corpus.py`.
+3. **Split on participant, not on clip**, if you are holding data out: one
+   participant appears in several files.
+4. **`charades` interactions and four raster formats are excluded** upstream.
 5. **Audio is that participant's own channel**, 48 kHz mono float32, already
    separated in the release. There is no partner voice to remove.
+6. **The thresholds are calibrated, not derived.** They come from agreement with
+   a labelled sample; they are documented in `docs/pipeline.md` and are meant to
+   be moved with evidence, not treated as physical constants.
 """

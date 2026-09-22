@@ -1,5 +1,26 @@
 # Review rubric — co-speech upper-body gesture
 
+> **Review is not a production step.** The pipeline decides accept/reject
+> automatically ([`pipeline.md` §6](pipeline.md#6-tier-2-qualification--the-production-decision))
+> and runs to completion with an empty verdict log. This rubric governs the
+> *development* review tooling, whose output is labelled data used to calibrate
+> and validate that automated decision.
+>
+> It is kept, and kept accurate, for a specific reason: every tier-2 clause was
+> derived from a criterion written here, and the mapping below is how that
+> translation can be audited. If you change this rubric, the automated clauses
+> are now describing a different standard than the labels they were fitted to.
+>
+> | rubric criterion | automated clause |
+> |---|---|
+> | tracking valid; arms/hands on the person | tier-1 `smplh_valid_frac`, `smplh_invalid_run`, `kp_conf_p10`, `implausible_frac` |
+> | arms and hands genuinely move | tier-2 `gesture_frac_speech`, `wrist_height_p75_mm`, and the posture dimension |
+> | one arm is enough | every measure is a max over the two hands |
+> | motion is natural, not noise | tier-2 `step_cosine_p50`, `consistency_r` |
+> | gesture and speech go together | tier-2 `speech_segments_covered`, `episode_median_s`, `episode_count_speech` |
+> | not a single brief adjustment | tier-2 episode clauses; peak excursion excluded from the score |
+> | not global body movement | torso frame; tier-2 `articulation_ratio` |
+
 This is the exact text every reviewer works from, human or model. It is kept in
 the repository rather than in someone's head so that verdicts taken months apart,
 or by different people, mean the same thing — and so that a disagreement can be

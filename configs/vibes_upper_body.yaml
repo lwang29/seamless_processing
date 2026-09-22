@@ -38,7 +38,35 @@ scan:
   tasks: 512
   gesture: {}
 
+# Tier-1 eligibility gates. Deliberately permissive: they run over 2.4 M windows
+# before selection and cannot tell "modest gesturer" from "no gesturer" without
+# deleting the modest one. Empty = the documented defaults in gates.py.
 gates: {}
+
+# Tier-2 qualification: the production accept/reject decision, which replaced
+# manual review. Nine disqualifiers naming pathologies, plus a composite quality
+# score that lets strength on several dimensions compensate for modesty on one.
+# Calibrated against labelled review data; see reports/18_automated_qualification.md
+# and docs/pipeline.md section 6. These are the numbers to move when the filter
+# is letting the wrong things through, or keeping too little.
+qualify:
+  # --- disqualifiers: failing any one is fatal, nothing compensates ---
+  min_speech_seconds: 8.0          # not enough speech to judge co-speech gesture
+  min_gesture_frac_speech: 0.50    # hands static while speaking  (exclusion 1)
+  min_wrist_height_p75_mm: -260.0  # hands parked in lap/at sides (exclusion 1)
+  min_episodes_speech: 3           # a single movement            (exclusion 5)
+  min_episode_median_s: 0.55       # a string of twitches         (exclusion 5)
+  min_speech_segments_covered: 0.60  # not sustained across utterances (exclusion 5)
+  min_articulation_ratio: 2.5      # motion is whole-body         (exclusion 4)
+  min_step_cosine_p50: 0.25        # tracker noise, by direction  (exclusion 3)
+  min_consistency_r: 0.70          # the two channels disagree    (exclusion 3)
+  # --- composite: weighted mean of posture/persistence/vigour/integrity ---
+  # 0.34 is the LEFT EDGE OF A PLATEAU, chosen by a stated rule rather than fitted:
+  # on the representative labelled sample, precision (0.936), recall (0.912) and
+  # specificity (0.615) are identical for every threshold in 0.34-0.40, so 0.34 is
+  # the smallest value delivering the full quality gain and therefore the one that
+  # keeps the most data and the highest recall. See reports/18 section 4.
+  min_gesture_quality: 0.34
 
 select:
   # The review unit is the file; its card samples the frames that would be

@@ -1,4 +1,4 @@
-"""Curation pipeline for a manually verified co-speech upper-body subset of the
+"""Fully automated curation pipeline for a co-speech upper-body subset of the
 Seamless Interaction dataset.
 
 The source tree is read-only. Everything this package produces lands under

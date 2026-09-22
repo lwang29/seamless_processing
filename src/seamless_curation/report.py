@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from .config import RunConfig
+from .dataset import load_manifest
 from .corpus import eligibility_counts
 from .review_store import VerdictStore
 
@@ -95,13 +96,51 @@ def write_report(config: RunConfig, out: Path | None = None) -> Path:
             "",
         ]
 
+    # ---- tier 2: the production decision -------------------------------
+    lines += ["## 5. Tier-2 qualification (the production decision)", ""]
+    if config.qualification_funnel_path.exists():
+        tier2 = pd.read_csv(config.qualification_funnel_path)
+        lines += [
+            "Automated accept/reject over the candidate clips. First failing clause per "
+            "clip; a clip must clear every disqualifier and reach the quality threshold.",
+            "",
+            _table(tier2),
+            "",
+            "Thresholds in force:",
+            "",
+            _table(pd.DataFrame(sorted(config.qualifiers.as_dict().items()),
+                                columns=["qualifier", "value"])),
+            "",
+        ]
+    else:
+        lines += ["Not run yet (`seamless-curation qualify`).", ""]
+
+    if config.qualified_path.exists():
+        scored = pd.read_parquet(config.qualified_path, columns=["qualified", "gesture_quality"])
+        kept = scored.loc[scored["qualified"], "gesture_quality"]
+        dropped = scored.loc[~scored["qualified"], "gesture_quality"]
+        distribution = pd.DataFrame(
+            [
+                {"group": name, "clips": int(len(values)),
+                 "p10": round(float(values.quantile(0.10)), 3) if len(values) else None,
+                 "p50": round(float(values.quantile(0.50)), 3) if len(values) else None,
+                 "p90": round(float(values.quantile(0.90)), 3) if len(values) else None}
+                for name, values in (("qualified", kept), ("excluded", dropped))
+            ]
+        )
+        lines += ["Gesture-quality score distribution:", "", _table(distribution), ""]
+
     resolved = VerdictStore(config.verdict_log).resolve()
-    lines += ["## 5. Manual review", ""]
+    lines += ["## 6. Development review labels", ""]
     if resolved.empty:
         lines += ["No verdicts recorded yet.", ""]
     else:
         verdicts = resolved["verdict"].value_counts().rename_axis("verdict").reset_index(name="items")
-        lines += [f"{len(resolved):,} review items judged.", "", _table(verdicts), ""]
+        lines += [
+            f"{len(resolved):,} review items judged. These labels calibrate and validate "
+            "the automated decision above; they are not part of producing it.",
+            "", _table(verdicts), "",
+        ]
         rejects: dict[str, int] = {}
         for reasons_list in resolved.loc[resolved["verdict"] == "reject", "reasons"]:
             for reason in reasons_list or ["unspecified"]:
@@ -118,8 +157,8 @@ def write_report(config: RunConfig, out: Path | None = None) -> Path:
         lines += ["Verdict sources:", "", _table(sources), ""]
 
     if config.accepted_clips_path.exists():
-        accepted = pd.read_csv(config.accepted_clips_path)
-        lines += ["## 6. Accepted subset", ""]
+        accepted = load_manifest(config.accepted_clips_path)
+        lines += ["## 7. Accepted subset (automated)", ""]
         if accepted.empty:
             lines += ["Empty: nothing has been accepted yet.", ""]
         else:
@@ -135,6 +174,30 @@ def write_report(config: RunConfig, out: Path | None = None) -> Path:
                          hours=("window_seconds", lambda s: round(s.sum() / 3600, 2)))
                     .reset_index()
                 ),
+                "",
+            ]
+
+    summary_path = config.output_root / "manifest_summary.json"
+    if summary_path.exists():
+        try:
+            agreement = json.loads(summary_path.read_text(encoding="utf-8")).get(
+                "agreement_with_review", {}
+            )
+        except (OSError, ValueError):
+            agreement = {}
+        if agreement:
+            rows = [
+                {"labels": source, **{k: v for k, v in stats.items()}}
+                for source, stats in agreement.items()
+            ]
+            lines += [
+                "## 8. Automated decision vs review labels",
+                "",
+                "How often the automated decision agrees with a reviewer, per label source. "
+                "Every reviewed item had already passed tier 1, so this is tier 2's own "
+                "accuracy. `human` is the gold set.",
+                "",
+                _table(pd.DataFrame(rows)),
                 "",
             ]
 

@@ -1,9 +1,15 @@
-"""The one promise the whole pipeline exists to keep.
+"""The two promises the manifests keep, which are no longer the same promise.
 
-Nothing reaches ``accepted_clips.csv`` that a reviewer did not accept. It is an
-inner join on the verdict log rather than a filter over the candidates, so there
-is no code path in which forgetting a condition lets an unreviewed clip through
-— but the property is worth asserting anyway, because it is the property.
+``accepted_clips.csv`` is the **production** manifest and is decided entirely by
+measurement: tier-1 gates plus tier-2 qualification, no verdict anywhere in its
+causal path. The property worth asserting about it is that a verdict cannot
+change it — neither to add a clip nor to remove one — because the pipeline must
+run to completion with no reviewer at all.
+
+``reviewed_clips.csv`` is the **development** subset: clips whose file a
+reviewer accepted. The old inner-join properties still hold here, and they are
+still worth asserting, because this is the labelled set the automated decision
+is validated against.
 """
 
 from __future__ import annotations
@@ -52,6 +58,16 @@ def candidate(review_item_id: str, clip_index: int = 0, **overrides) -> dict:
         "smplh_longest_invalid_s": 0.0,
         "hand_frozen_frac": 0.0,
         "clip_score": 0.8,
+        # Tier-2 measures. The defaults describe a clip that qualifies, so a
+        # test that wants a rejection has to say which measure it is spoiling.
+        "step_cosine_p50": 0.6,
+        "wrist_height_p75_mm": -90.0,
+        "wrist_range_mm": 760.0,
+        "arm_abduction_p75_deg": 32.0,
+        "posture_spread_mm": 270.0,
+        "episode_median_s": 1.9,
+        "arm_speed_speech_p50_mm_s": 230.0,
+        "torso_travel_mm_s_p50": 24.0,
     }
     row.update(overrides)
     return row
@@ -80,7 +96,64 @@ def run(tmp_path: Path):
     return config
 
 
-def test_only_accepted_and_reviewed_clips_reach_the_manifest(run) -> None:
+def test_the_production_manifest_needs_no_reviewer_at_all(run) -> None:
+    """The headline property: no verdict log, full output.
+
+    Manual review was removed from the production pipeline, so a run with an
+    empty verdict log must still produce the training manifest. If this ever
+    fails, review has crept back into the critical path.
+    """
+
+    summary = build_manifests(run)
+    manifest = pd.read_csv(run.accepted_clips_path)
+
+    assert summary["decision"] == "automated"
+    # r1 contributes two clips, r2/r3/r4 one each.
+    assert len(manifest) == 5, "every fixture clip qualifies on its measures"
+    assert summary["accepted_clips"] == 5
+    assert set(manifest["decision_source"]) == {"automated"}
+    assert summary["review"]["reviewed_items"] == 0
+    assert pd.read_csv(run.reviewed_clips_path).empty
+
+
+def test_a_verdict_cannot_change_the_production_manifest(run) -> None:
+    """Not even a reject. The automated decision is the automated decision."""
+
+    before = build_manifests(run)
+    store = VerdictStore(run.verdict_log)
+    store.append(Verdict("r1", "reject", "ann", reasons=("static_hands",)))
+    store.append(Verdict("r2", "accept", "ann", saw_video=True))
+    after = build_manifests(run)
+
+    assert after["accepted_clips"] == before["accepted_clips"]
+    manifest = pd.read_csv(run.accepted_clips_path)
+    assert "r1" in set(manifest["review_item_id"]), "a reject does not remove a qualifying clip"
+    assert "reviewer" not in manifest.columns, "no verdict column belongs in the production file"
+
+
+def test_measurement_alone_removes_a_clip(run, monkeypatch) -> None:
+    """The counterpart: what *does* change the manifest is a measurement."""
+
+    import pandas as pd_
+    from seamless_curation import manifest as manifest_module
+
+    original = pd_.read_parquet
+
+    def spoiled(path, *args, **kwargs):
+        frame = original(path, *args, **kwargs)
+        if "review_item_id" in frame.columns:
+            frame.loc[frame["review_item_id"] == "r1", "gesture_frac_speech"] = 0.05
+        return frame
+
+    monkeypatch.setattr(manifest_module.pd, "read_parquet", spoiled)
+    build_manifests(run)
+    manifest = pd.read_csv(run.accepted_clips_path)
+
+    assert "r1" not in set(manifest["review_item_id"])
+    assert "r2" in set(manifest["review_item_id"])
+
+
+def test_the_reviewed_subset_still_holds_only_accepted_items(run) -> None:
     store = VerdictStore(run.verdict_log)
     store.append(Verdict("r1", "accept", "ann", saw_video=True))
     store.append(Verdict("r2", "reject", "ann", reasons=("static_hands",)))
@@ -88,13 +161,12 @@ def test_only_accepted_and_reviewed_clips_reach_the_manifest(run) -> None:
     # r4 is never reviewed at all.
 
     summary = build_manifests(run)
-    manifest = pd.read_csv(run.accepted_clips_path)
+    reviewed = pd.read_csv(run.reviewed_clips_path)
 
-    assert set(manifest["review_item_id"]) == {"r1"}
-    assert len(manifest) == 2, "both of r1's clips are accepted by the file-level verdict"
-    assert summary["accepted_clips"] == 2
-    assert summary["verdicts"] == {"accept": 1, "reject": 1, "unsure": 1}
-    assert summary["reject_reasons"] == {"static_hands": 1}
+    assert set(reviewed["review_item_id"]) == {"r1"}
+    assert len(reviewed) == 2, "both of r1's clips are covered by the file-level verdict"
+    assert summary["review"]["verdicts"] == {"accept": 1, "reject": 1, "unsure": 1}
+    assert summary["review"]["reject_reasons"] == {"static_hands": 1}
 
 
 def test_the_strict_manifest_holds_only_verdicts_taken_with_sound(run) -> None:
@@ -103,12 +175,12 @@ def test_the_strict_manifest_holds_only_verdicts_taken_with_sound(run) -> None:
     store.append(Verdict("r2", "accept", "ann", saw_video=False))
 
     build_manifests(run)
-    everything = pd.read_csv(run.accepted_clips_path)
+    reviewed = pd.read_csv(run.reviewed_clips_path)
     with_audio = pd.read_csv(run.output_root / "accepted_clips_with_audio.csv")
 
-    assert set(everything["review_item_id"]) == {"r1", "r2"}
+    assert set(reviewed["review_item_id"]) == {"r1", "r2"}
     assert set(with_audio["review_item_id"]) == {"r1"}
-    assert set(everything["review_evidence"]) == {"card+video", "card"}
+    assert set(reviewed["review_evidence"]) == {"card+video", "card"}
 
 
 def test_an_overturned_reject_is_honoured(run) -> None:
@@ -118,28 +190,37 @@ def test_an_overturned_reject_is_honoured(run) -> None:
     store.append(Verdict("r1", "reject", "ann", recorded_utc="2026-01-01T00:00:00Z"))
     store.append(Verdict("r1", "accept", "pi", recorded_utc="2026-02-01T00:00:00Z"))
 
-    summary = build_manifests(run)
-    manifest = pd.read_csv(run.accepted_clips_path)
-    assert set(manifest["review_item_id"]) == {"r1"}
-    assert set(manifest["reviewer"]) == {"pi"}
-    assert summary["contested_items"] == 1
+    build_manifests(run)
+    reviewed = pd.read_csv(run.reviewed_clips_path)
+    assert set(reviewed["review_item_id"]) == {"r1"}
+    assert set(reviewed["reviewer"]) == {"pi"}
 
 
-def test_no_verdicts_means_an_empty_manifest_not_a_crash(run) -> None:
-    summary = build_manifests(run)
-    assert summary["accepted_clips"] == 0
-    assert pd.read_csv(run.accepted_clips_path).empty
-
-
-def test_the_manifest_records_who_or_what_reviewed_each_clip(run) -> None:
+def test_the_reviewed_subset_records_who_or_what_reviewed_each_clip(run) -> None:
     store = VerdictStore(run.verdict_log)
     store.append(Verdict("r1", "accept", "claude-review-3", verdict_source="model:claude-opus-5"))
     store.append(Verdict("r2", "accept", "ann", verdict_source="human"))
 
+    build_manifests(run)
+    reviewed = pd.read_csv(run.reviewed_clips_path)
+    assert set(reviewed["verdict_source"]) == {"model:claude-opus-5", "human"}
+
+
+def test_agreement_with_review_is_reported(run) -> None:
+    """The automated decision's confusion against the labels, as a number."""
+
+    store = VerdictStore(run.verdict_log)
+    store.append(Verdict("r1", "accept", "ann", verdict_source="human"))
+    store.append(Verdict("r2", "reject", "ann", verdict_source="human"))
+
     summary = build_manifests(run)
-    manifest = pd.read_csv(run.accepted_clips_path)
-    assert set(manifest["verdict_source"]) == {"model:claude-opus-5", "human"}
-    assert summary["verdict_sources"] == {"model:claude-opus-5": 1, "human": 1}
+    human = summary["agreement_with_review"]["human"]
+
+    assert human["n"] == 2
+    # Both fixture files qualify on their measures, so the accept agrees and
+    # the reject is a false accept. That is the honest report, not a hidden one.
+    assert human["true_accept"] == 1 and human["false_accept"] == 1
+    assert human["precision"] == 0.5 and human["recall"] == 1.0
 
 
 def test_the_manifest_names_frame_ranges_and_never_copies_media(run) -> None:

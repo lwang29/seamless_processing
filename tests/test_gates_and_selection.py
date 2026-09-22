@@ -225,3 +225,24 @@ def test_one_handed_gesture_qualifies() -> None:
     row = good_window(hands_together_frac=0.0, wrist_height_p75_mm=-180.0)
     gated = apply_gates(pd.DataFrame([row]), Gates())
     assert bool(gated["qualifies"].iloc[0]), gated["fail_reason"].iloc[0]
+
+
+def test_the_funnel_reports_every_clause_including_the_silent_ones() -> None:
+    """A clause that never fires must still appear, as a zero.
+
+    "0" and "absent" are different facts. The first says nothing in this corpus
+    looked like that; the second says nothing at all, and is what a mis-wired
+    clause also looks like. On the live corpus ``hand_pose_frozen`` fires zero
+    times out of 2.42 M windows, and that is worth being able to see.
+    """
+
+    gated = apply_gates(pd.DataFrame([good_window(), good_window(kp_conf_p10=0.01)]), Gates())
+    funnel = gate_funnel(gated)
+
+    reported = set(funnel["stage"])
+    for *_, flag in ALL_CLAUSES:
+        assert flag in reported, f"{flag} vanished from the funnel"
+    assert {"unmeasurable", "qualifies"} <= reported
+    assert len(funnel) == len(ALL_CLAUSES) + 2
+    assert int(funnel.loc[funnel.stage == "keypoints_missing", "windows"].iloc[0]) == 1
+    assert int(funnel.loc[funnel.stage == "hand_pose_frozen", "windows"].iloc[0]) == 0
