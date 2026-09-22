@@ -220,3 +220,24 @@ def test_import_accepts_both_json_and_jsonl(tmp_path: Path) -> None:
     assert store.import_file(listing) == 1
     assert store.import_file(lines) == 1
     assert store.counts() == {"accept": 1, "reject": 1, "unsure": 0}
+
+
+def test_an_overturn_with_a_different_timestamp_format_still_wins(tmp_path: Path) -> None:
+    """Last-write-wins must survive an imported verdict in offset form.
+
+    Everything this pipeline writes uses "...Z", where lexical order is
+    chronological. `import-verdicts` accepts records from elsewhere, and
+    "2026-02-01T00:00:00+00:00" sorts lexically *before* "2026-01-01T00:00:00Z"
+    even though it is a month later. Sorting the raw string would silently
+    resurrect the overturned verdict.
+    """
+
+    store = VerdictStore(tmp_path / "v.jsonl")
+    store.append(Verdict("r1", "reject", "first", recorded_utc="2026-01-01T00:00:00Z"))
+    store.append(Verdict("r1", "accept", "second", recorded_utc="2026-02-01T00:00:00+00:00"))
+
+    resolved = store.resolve()
+    assert len(resolved) == 1
+    assert resolved.iloc[0]["verdict"] == "accept"
+    assert resolved.iloc[0]["reviewer"] == "second"
+    assert bool(resolved.iloc[0]["contested"])

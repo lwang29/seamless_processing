@@ -202,3 +202,32 @@ def test_wilson_is_not_degenerate_at_a_perfect_score() -> None:
     low, high = wilson_interval(67, 67)
     assert high == pytest.approx(1.0)
     assert 0.93 < low < 0.96
+
+
+def test_exported_rows_carry_the_scores_the_docs_tell_users_to_filter_on() -> None:
+    """`DATASET.md` and `using_the_subset.md` both show
+    ``manifest[manifest.gesture_quality > 0.6]``. If the export drops the score
+    columns, that instruction fails with a KeyError for every downstream user,
+    and the failure surfaces in their code rather than in this repository.
+
+    This shipped once: `_shape` built its column order from identity + paths +
+    provenance + measures and silently omitted SCORE_COLUMNS.
+    """
+
+    from seamless_curation.export import (
+        IDENTITY_COLUMNS,
+        MEASURE_COLUMNS,
+        PATH_COLUMNS,
+        PROVENANCE_COLUMNS,
+        SCORE_COLUMNS,
+        _shape,
+    )
+
+    row = {c: 1.0 for c in IDENTITY_COLUMNS + MEASURE_COLUMNS + SCORE_COLUMNS}
+    row.update(start_frame=0, end_frame=900, file_id="f", clip_id="c",
+               source_relbase="a/b", vendor="V00", participant_id="0001", flags="")
+    shaped = _shape(pd.DataFrame([row]), "accepted", False)
+
+    for column in SCORE_COLUMNS:
+        assert column in shaped.columns, f"export dropped {column}"
+    assert "gesture_quality" in shaped.columns

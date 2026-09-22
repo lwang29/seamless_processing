@@ -23,7 +23,7 @@ re-export.
 | file | clips | hours | files | participants | how it was decided |
 |---|---:|---:|---:|---:|---|
 | `clips_accepted.csv` | 50,741 | 422.8 | 24,204 | 3,504 | fully automated |
-| `clips_reviewed.csv` | 1,030 | 8.6 | 388 | 388 | automated, and a reviewer also accepted it |
+| `clips_reviewed.csv` | 1,030 | 8.6 | 498 | 490 | automated, and a reviewer also accepted it |
 
 Both are under `/simurgh/group/lw29/seamless_cospeech_subset/`, next to a
 `DATASET.md` documenting every column.
@@ -31,7 +31,10 @@ Both are under `/simurgh/group/lw29/seamless_cospeech_subset/`, next to a
 **Use `clips_accepted.csv`.** It is the production subset and what the pipeline
 is for. `clips_reviewed.csv` is a development artefact — the labelled set the
 automated decision was validated against. It is much smaller and will stay that
-way; reach for it only if you specifically need per-clip human sign-off.
+way. **Most of its reviewers were models, not people**: 17% of its rows carry
+`verdict_source == "human"`, and only 181 rows are verdicts a person took with
+the clip playing (`review_evidence == "card+video"`). Read `verdict_source`
+per row rather than treating the file as human sign-off.
 
 ## How good is it?
 
@@ -136,7 +139,7 @@ Full detail — every step, threshold and known failure mode — is in
 
 ## Re-filtering without re-running anything
 
-Every row carries its quality score, its four dimension scores and a `flags`
+Every row carries its quality score, its four dimension scores and a `exclusion_flags`
 string listing every rule it failed:
 
 ```python

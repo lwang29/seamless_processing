@@ -58,7 +58,8 @@ MEASURE_COLUMNS: tuple[str, ...] = (
 
 #: Tier-2 scores, carried so a row can be re-thresholded without re-running.
 SCORE_COLUMNS: tuple[str, ...] = (
-    "gesture_quality", "dim_posture", "dim_persistence", "dim_vigour", "dim_integrity", "flags",
+    "gesture_quality", "dim_posture", "dim_persistence", "dim_vigour", "dim_integrity",
+    "exclusion_flags",
 )
 
 PROVENANCE_COLUMNS: tuple[str, ...] = (
@@ -106,7 +107,8 @@ def _shape(frame: pd.DataFrame, tier: str, reviewed: bool) -> pd.DataFrame:
             frame[column] = ""
     order = [
         column
-        for column in IDENTITY_COLUMNS + PATH_COLUMNS + PROVENANCE_COLUMNS + MEASURE_COLUMNS
+        for column in IDENTITY_COLUMNS + PATH_COLUMNS + PROVENANCE_COLUMNS
+        + MEASURE_COLUMNS + SCORE_COLUMNS
         if column in frame.columns
     ]
     return frame[order].sort_values(["file_id", "start_frame"]).reset_index(drop=True)
@@ -207,6 +209,18 @@ def _vendor_table(frame: pd.DataFrame) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _source_table(frame: pd.DataFrame) -> str:
+    """Who actually reviewed the rows of the reviewed subset."""
+
+    if not len(frame) or "verdict_source" not in frame.columns:
+        return "_(no reviewed rows)_\n"
+    counts = frame["verdict_source"].value_counts()
+    lines = ["| verdict source | clips | share |", "|---|---:|---:|"]
+    for source, n in counts.items():
+        lines.append(f"| `{source}` | {n} | {n / len(frame):.0%} |")
+    return "\n".join(lines) + "\n"
+
+
 def _dataset_card(
     config: RunConfig, summary: dict[str, Any], accepted: pd.DataFrame, reviewed: pd.DataFrame
 ) -> str:
@@ -235,7 +249,7 @@ row points back into it. Load a row with
 | file | clips | hours | files | participants | how it was decided |
 |---|---:|---:|---:|---:|---|
 | `clips_accepted.csv` | {a['clips']} | {a['hours']} | {a['files']} | {a['participants']} | fully automated |
-| `clips_reviewed.csv` | {r['clips']} | {r['hours']} | {r['files']} | {r['participants']} | automated + a reviewer looked at it |
+| `clips_reviewed.csv` | {r['clips']} | {r['hours']} | {r['files']} | {r['participants']} | automated, and a reviewer also accepted it |
 
 ## Which one to use
 
@@ -246,8 +260,13 @@ or model judgement is anywhere in its causal path, so it is reproducible from
 the source tree and a config file.
 
 `clips_reviewed.csv` is a development artefact: the labelled set the automated
-decision was calibrated and validated against. It is much smaller and will stay
-that way. Use it only if you specifically need per-clip human sign-off.
+decision was calibrated and validated against.
+
+**Most of its reviewers were models, not people** — see the `verdict_source`
+column, and `review_evidence == "card+video"` for the rows where a person
+watched the clip with sound. Do not read the file as human sign-off.
+
+{_source_table(reviewed)}
 
 {agreement}
 
@@ -282,7 +301,7 @@ set. Peak wrist excursion is **excluded** from the score, because it separated
 the labelled set backwards - it rewards one big isolated adjustment.
 
 Every row carries its own `gesture_quality`, the four `dim_*` scores and a
-`flags` string, so any decision can be traced and any threshold re-applied
+`exclusion_flags` string, so any decision can be traced and any threshold re-applied
 without re-running the pipeline:
 
 ```python
@@ -298,7 +317,7 @@ stricter = manifest[manifest.gesture_quality > 0.6]
 | paths | `pose_path`, `audio_path`, `video_path`, `annotation_path` - all **relative to `source_root`** |
 | provenance | `tier`, `decision_source`, `reviewed` |
 | measures | every gate measurement for that window |
-| scores | `gesture_quality`, `dim_posture`, `dim_persistence`, `dim_vigour`, `dim_integrity`, `flags` |
+| scores | `gesture_quality`, `dim_posture`, `dim_persistence`, `dim_vigour`, `dim_integrity`, `exclusion_flags` |
 
 `split` is the **release's** train/dev/test split, preserved unchanged.
 `participant_id` is unique only within a vendor; use `vendor + ":" + participant_id`.

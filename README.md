@@ -19,7 +19,7 @@ outputs/<run_id>/qualified_clips.parquet every candidate clip with scores + flag
 outputs/<run_id>/gate_funnel.csv         tier-1: what each clause removed
 outputs/<run_id>/qualification_funnel.csv tier-2: what each clause removed
 outputs/<run_id>/export/                 the packaged handover + dataset card
-outputs/<run_id>/reviewed_clips.csv      [development] the human-verified subset
+outputs/<run_id>/reviewed_clips.csv      [development] the reviewed subset (mostly model verdicts)
 outputs/<run_id>/review_verdicts.jsonl   [development] every verdict, append-only
 ```
 
@@ -182,7 +182,7 @@ Two design choices carry most of the weight:
   beanie.
 
 Every clip, kept or dropped, carries its `gesture_quality`, four dimension
-scores, and a `flags` string listing **every** clause it failed. Both funnels
+scores, and an `exclusion_flags` string listing **every** clause it failed. Both funnels
 report every clause including ones that fired zero times, because "0" and
 "absent" are different facts and a mis-wired clause looks exactly like an
 absent one.

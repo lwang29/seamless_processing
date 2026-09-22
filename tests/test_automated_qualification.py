@@ -60,7 +60,7 @@ def test_clear_co_speech_gesture_is_accepted(model_root) -> None:
     """Large two-handed gesturing locked to the speech. The thing we want."""
 
     result = decide(model_root, shoulder_swing_deg=55.0, episodic=True)
-    assert result["accepted"], (result["fail_reason"], result["flags"])
+    assert result["accepted"], (result["fail_reason"], result["exclusion_flags"])
     assert result["gesture_quality"] > 0.9
 
 
@@ -68,7 +68,7 @@ def test_one_handed_gesture_is_accepted(model_root) -> None:
     """Rubric decision 2026-09-21; every measure is a max over the two hands."""
 
     result = decide(model_root, shoulder_swing_deg=55.0, one_handed=True, episodic=True)
-    assert result["accepted"], (result["fail_reason"], result["flags"])
+    assert result["accepted"], (result["fail_reason"], result["exclusion_flags"])
 
 
 def test_subtle_but_genuine_gesture_is_not_discarded(model_root) -> None:
@@ -86,7 +86,7 @@ def test_subtle_but_genuine_gesture_is_not_discarded(model_root) -> None:
 
     result = decide(model_root, shoulder_swing_deg=22.0, episodic=True)
 
-    assert result["accepted"], (result["fail_reason"], result["flags"])
+    assert result["accepted"], (result["fail_reason"], result["exclusion_flags"])
     assert result["dim_posture"] < 0.75, "fixture is supposed to be modest in amplitude"
     assert result["dim_persistence"] > 0.9 and result["dim_integrity"] > 0.9
     assert result["gesture_quality"] > Qualifiers().min_gesture_quality
@@ -100,7 +100,7 @@ def test_static_hands_while_speaking_is_rejected(model_root) -> None:
 
     assert not result["accepted"]
     assert result["smplh_valid_frac"] == 1.0, "the point is that tracking is clean"
-    assert "static_while_speaking" in result["flags"]
+    assert "static_while_speaking" in result["exclusion_flags"]
 
 
 def test_tracking_jitter_is_not_mistaken_for_gesture(model_root) -> None:
@@ -124,7 +124,7 @@ def test_global_body_movement_is_not_gesture(model_root) -> None:
     result = decide(model_root, shoulder_swing_deg=0.0, global_drift_mm=400.0, episodic=True)
 
     assert not result["accepted"]
-    assert "static_while_speaking" in result["flags"]
+    assert "static_while_speaking" in result["exclusion_flags"]
 
 
 def test_a_single_brief_adjustment_is_not_gesturing(model_root) -> None:
@@ -153,7 +153,7 @@ def test_a_single_brief_adjustment_is_not_gesturing(model_root) -> None:
         "fixture no longer exercises the score-would-accept-it case"
     )
     for clause in ("static_while_speaking", "too_few_episodes", "gesture_not_sustained"):
-        assert clause in result["flags"], result["flags"]
+        assert clause in result["exclusion_flags"], result["exclusion_flags"]
 
 
 def test_motion_unrelated_to_speech_is_rejected(model_root) -> None:
@@ -208,7 +208,7 @@ def test_a_missing_measurement_fails_its_clause_rather_than_passing() -> None:
 
     assert bool(scored["qualified"].iloc[0])
     assert not bool(scored["qualified"].iloc[1])
-    assert "motion_is_detector_noise" in scored["flags"].iloc[1]
+    assert "motion_is_detector_noise" in scored["exclusion_flags"].iloc[1]
     assert not bool(scored["qualified"].iloc[2])
 
 
@@ -219,7 +219,7 @@ def test_flags_list_every_failure_and_fail_stage_names_the_first() -> None:
                torso_travel_mm_s_p50=1e6, arm_speed_speech_p50_mm_s=0.0)
     scored = qualify(pd.DataFrame([row]), Qualifiers())
 
-    flags = scored["flags"].iloc[0].split(";")
+    flags = scored["exclusion_flags"].iloc[0].split(";")
     assert len(flags) > 3, "a row this bad fails many clauses; all should be reported"
     assert scored["fail_stage"].iloc[0] == flags[0]
     assert scored["fail_stage"].iloc[0] == DISQUALIFIERS[0][3] or flags[0] in {
@@ -251,3 +251,23 @@ def test_funnel_accounts_for_every_clip() -> None:
     funnel = qualification_funnel(scored)
 
     assert int(funnel["clips_failed_here"].sum()) == len(scored)
+
+
+def test_the_flags_column_is_not_shadowed_by_a_pandas_attribute() -> None:
+    """A column called `flags` is unreachable as `df.flags`.
+
+    `DataFrame.flags` is a pandas built-in returning a Flags object, so
+    `manifest.flags` silently hands back the wrong thing instead of raising —
+    which is worse than an error, because the caller gets an object and only
+    finds out much later. The column is `exclusion_flags` for that reason.
+    """
+
+    row = {column: 1e6 for column, _, _, _ in DISQUALIFIERS}
+    row.update({column: 1e6 for column, _, _ in RAMPS.values()})
+    row.update(window_seconds=30.0, file_id="f", clip_id="c",
+               torso_travel_mm_s_p50=1.0, arm_speed_speech_p50_mm_s=1e6)
+    scored = qualify(pd.DataFrame([row]), Qualifiers())
+
+    assert "exclusion_flags" in scored.columns
+    assert "flags" not in scored.columns
+    assert isinstance(scored.exclusion_flags, pd.Series)

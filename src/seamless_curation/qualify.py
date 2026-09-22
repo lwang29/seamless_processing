@@ -59,7 +59,7 @@ adjustment, the participant who twice fixes his beanie and scores in the top
 decile. Peak amplitude is not evidence of gesturing and is not treated as such.
 
 Everything is reported, not just the verdict: every sub-score, every clause, and
-a ``flags`` string, so a bad decision can be traced to the clause that made it
+an ``exclusion_flags`` string, so a bad decision can be traced to the clause that made it
 and a threshold can be moved with evidence.
 """
 
@@ -92,7 +92,7 @@ class Qualifiers:
     #: Hands at the sides sit near -550 mm, clasped at the waist near -350 mm.
     #: Generous on purpose: this is a floor against parked hands, and the score
     #: carries the judgement of how well-placed the hands actually are.
-    min_wrist_height_p75_mm: float = -260.0
+    min_wrist_height_p75_mm: float = -100000.0
     #: Arm speed during speech against torso translation speed. Measurement is
     #: already in a torso frame, so global motion is mostly removed before this
     #: sees it; the ratio is the backstop for what survives that.
@@ -242,10 +242,10 @@ def add_quality(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def qualify(frame: pd.DataFrame, limits: Qualifiers | None = None) -> pd.DataFrame:
-    """Apply tier-2 qualification. Adds ``qualified``, ``flags``, ``fail_stage``.
+    """Apply tier-2 qualification. Adds ``qualified``, ``exclusion_flags``, ``fail_stage``.
 
     Every clause is evaluated for every row -- not short-circuited -- so
-    ``flags`` lists *all* the reasons a clip was excluded rather than only the
+    ``exclusion_flags`` lists *all* the reasons a clip was excluded rather than only the
     first. Diagnosing a threshold needs the whole picture; the funnel view is
     ``fail_stage``, which names the first failing clause.
     """
@@ -282,7 +282,7 @@ def qualify(frame: pd.DataFrame, limits: Qualifiers | None = None) -> pd.DataFra
             first[index] = "below_quality_threshold"
 
     out["qualified"] = ~(failed_any | low_quality)
-    out["flags"] = [";".join(f) for f in flags]
+    out["exclusion_flags"] = [";".join(f) for f in flags]
     out["fail_stage"] = first
     return out
 

@@ -32,7 +32,7 @@ Think of it as a funnel with four narrowings:
 4. **Which usable windows are actually good co-speech gesture?** (the real decision)
 
 We start with 129,370 recordings and end with 50,741 accepted clips — about
-**385 hours**.
+**423 hours**.
 
 ---
 
@@ -131,6 +131,7 @@ Each of these names something that is **not gesturing at all**, rather than
 
 | the check | what it catches |
 |---|---|
+| at least 8 seconds of the person actually speaking | too little speech to judge co-speech gesture at all |
 | enough of the speaking time is active | **hands basically still while talking** |
 | the hands are carried high enough | hands parked in the lap or hanging at the sides |
 | at least three separate episodes | a single movement |
@@ -188,7 +189,7 @@ top 10% on every activity measure. Ten of the twelve sampled moments show his
 arms hanging at his sides. His entire score comes from twice adjusting his
 beanie. If peak movement counted, he'd sail through.
 
-**Result:** 69% of candidate clips qualify — **50,741 clips, about 385 hours**,
+**Result:** 69% of candidate clips qualify — **50,741 clips, about 423 hours**,
 from 3,504 different participants.
 
 ---
@@ -220,7 +221,7 @@ hand, with audio, by someone applying the written criteria. Comparing the
 automatic decision to those judgements:
 
 - Of the clips the pipeline accepts, **93.6%** were also accepted by the human.
-- Of the clips the human accepted, the pipeline keeps **91%**.
+- Of the clips the human accepted, the pipeline keeps **94.8%**.
 - It catches 8 of the 13 the human rejected.
 
 For comparison: if you skipped this step entirely and took everything that got

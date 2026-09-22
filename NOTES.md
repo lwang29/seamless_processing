@@ -959,3 +959,11 @@ pretending it was fitted would claim a precision 224 labels do not support.
 `numbers.py` shadowed the stdlib module and broke numpy's import, from inside
 `pandas`. Cost ten minutes of reading a traceback that had nothing to do with
 the code under test.
+
+**Mutation-testing agents need worktree isolation.** An adversarial audit was
+asked to verify the tests were not vacuous by mutating the source and checking
+the suite failed. It did that *in the shared working tree*, and a test run
+started at the same moment reported two unrelated failures that vanished on
+re-run. The agent reverted correctly and nothing was lost, but a transient
+"failure" with no reproducible cause is a bad half-hour. Give any agent that
+edits source `isolation: "worktree"`.

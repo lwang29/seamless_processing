@@ -15,14 +15,19 @@ source tree, and none copies a byte of media.
     One row per qualifying clip: a contiguous ``[start_frame, end_frame)`` range
     of one participant file that passed every tier-1 gate and every tier-2
     disqualifier, and scored at or above the quality threshold. Carries its
-    dimension scores and ``flags`` so any row can be traced to the clauses that
+    dimension scores and ``exclusion_flags`` so any row can be traced to the clauses that
     admitted it.
 
-``reviewed_clips.csv`` — **the manually verified subset.**
-    Rows whose file a reviewer looked at and accepted. A *development* artefact,
-    retained because it is the labelled set the automated stage is validated
-    against and because it carries a stronger guarantee for anyone who wants
-    one. Producing it is optional; the pipeline runs to completion without it.
+``reviewed_clips.csv`` — **the reviewed subset.**
+    Rows whose file a reviewer looked at and accepted. A *development* artefact:
+    it is the labelled set the automated stage is validated against.
+
+    **Most of its reviewers are models, not people.** At the time of writing it
+    is 17% ``human``, the rest ``model:*`` plus three ``policy:*`` rows from the
+    one-handed rubric decision. Do not read it as human sign-off; read
+    ``verdict_source`` per row, and use ``accepted_clips_with_audio.csv`` if
+    what you want is verdicts a person took with the clip playing. Producing any
+    of this is optional; the pipeline runs to completion without it.
 
 ``accepted_clips_with_audio.csv`` — **the strict subset.**
     The reviewed rows whose reviewer played the clip with sound, the only rows
@@ -65,7 +70,7 @@ MANIFEST_COLUMNS = [
 QUALITY_COLUMNS = [
     "gesture_quality", "dim_posture", "dim_persistence", "dim_vigour", "dim_integrity",
     "articulation_ratio", "step_cosine_p50", "arm_speed_speech_p50_mm_s",
-    "wrist_range_mm", "episode_median_s", "flags",
+    "wrist_range_mm", "episode_median_s", "exclusion_flags",
 ]
 
 #: Columns of the automated production manifest.
@@ -121,7 +126,20 @@ def build_manifests(config: RunConfig) -> dict[str, Any]:
         "qualifiers": config.qualifiers.as_dict(),
         "manifest": str(config.accepted_clips_path),
     }
-    summary.update(_review_artefacts(config, scored))
+    # The production manifest is already written above. Review is a development
+    # input, so a malformed or half-written verdict log must not be able to
+    # abort this stage -- otherwise review is back in the critical path by the
+    # back door, which is the one thing this design is for.
+    try:
+        summary.update(_review_artefacts(config, scored))
+    except ValueError:
+        raise
+    except Exception as error:  # noqa: BLE001 - deliberately broad; see above
+        summary["review"] = {
+            "reviewed_items": 0,
+            "error": f"{type(error).__name__}: {error}",
+            "note": "verdict log could not be read; production output is unaffected",
+        }
     return summary
 
 
@@ -138,6 +156,22 @@ def _review_artefacts(config: RunConfig, scored: pd.DataFrame) -> dict[str, Any]
             pd.DataFrame(columns=MANIFEST_COLUMNS).to_csv(path, index=False)
         return {"review": {"reviewed_items": 0, "note": "no verdicts; production output is unaffected"}}
 
+    # Integrity first, over EVERY verdict that joins -- not only the accepts.
+    # A reject bound to the wrong file never reaches a manifest, so an
+    # accepts-only check would miss it, but it still corrupts the agreement
+    # numbers in the summary, which is where a mis-binding does its damage.
+    file_of_candidate = scored.drop_duplicates("review_item_id").set_index("review_item_id")["file_id"]
+    claimed = resolved.set_index("review_item_id")["file_id"].reindex(file_of_candidate.index).dropna()
+    claimed = claimed[claimed.astype(str) != ""]
+    disagree = claimed[claimed.astype(str) != file_of_candidate.reindex(claimed.index).astype(str)]
+    if len(disagree):
+        first = disagree.index[0]
+        raise ValueError(
+            f"{len(disagree)} verdicts name a different file than the candidate they join to, "
+            f"e.g. {first}: verdict says {disagree.iloc[0]!r}, candidate says "
+            f"{file_of_candidate[first]!r}"
+        )
+
     accepted_items = resolved.loc[resolved["verdict"] == "accept"]
     merged = scored.merge(
         accepted_items[
@@ -146,16 +180,6 @@ def _review_artefacts(config: RunConfig, scored: pd.DataFrame) -> dict[str, Any]
         on="review_item_id",
         how="inner",
     )
-    mismatched = merged.loc[
-        (merged["reviewed_file_id"].fillna("") != "")
-        & (merged["reviewed_file_id"] != merged["file_id"])
-    ]
-    if len(mismatched):
-        raise ValueError(
-            f"{len(mismatched)} verdicts name a different file than the candidate they joined "
-            f"to, e.g. {mismatched.iloc[0]['review_item_id']}: reviewed "
-            f"{mismatched.iloc[0]['reviewed_file_id']}, candidate {mismatched.iloc[0]['file_id']}"
-        )
     merged = _ensure_fps(merged, config)
     merged["review_evidence"] = merged["saw_video"].map({True: "card+video", False: "card"})
     merged["reviewed_utc"] = merged["recorded_utc"]

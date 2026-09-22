@@ -216,9 +216,20 @@ class VerdictStore:
         frame = pd.DataFrame(records)
         if "file_id" not in frame.columns:
             frame["file_id"] = ""
-        # Stable sort on the timestamp alone: two verdicts recorded in the same
-        # second keep their append order, which is the order they happened in.
-        frame = frame.sort_values("recorded_utc", kind="stable")
+        # Stable sort on the timestamp: two verdicts recorded in the same second
+        # keep their append order, which is the order they happened in.
+        #
+        # Parse rather than sorting the raw string. Everything this pipeline
+        # writes uses "%Y-%m-%dT%H:%M:%SZ", where lexical order happens to be
+        # chronological -- but `import-verdicts` accepts records from elsewhere,
+        # and one offset-form stamp ("2026-02-01T00:00:00+00:00") sorts before
+        # every "Z" stamp lexically regardless of when it happened. That would
+        # silently lose last-write-wins, which is how an overturned verdict is
+        # meant to work. Unparseable stamps sort first, keeping append order.
+        stamps = pd.to_datetime(frame["recorded_utc"], format="mixed", utc=True, errors="coerce")
+        frame = frame.assign(_stamp=stamps).sort_values(
+            "_stamp", kind="stable", na_position="first"
+        ).drop(columns="_stamp")
         grouped = frame.groupby("review_item_id", sort=False)
         latest = grouped.tail(1).set_index("review_item_id")
         history = grouped.agg(

@@ -88,14 +88,24 @@ no pose.
 | all four modalities present | `.npz`, `.json`, `.mp4`, `.wav` | a partial bundle cannot be measured or trained on |
 | video stream present | — | some bundles carry audio only |
 | raster format | exclude `2160x2160`, `1920x1080`, `640x480`, `3840x2160` | these are the formats whose camera geometry the release's fit handles badly; the stretch ends up in the pose itself |
-| interaction type | exclude `charades` | a game with scripted physical actions, not conversation |
+| interaction type | exclude `charades` (reported as `no_speech_activity`) | a game with scripted physical actions, not conversation |
 | duration | `>= 40 s` | shorter than one 30-second window plus a hop |
-| speech activity | at least one VAD segment | no own speech means nothing co-speech to measure |
+| probe status | `probe_status == "ok"` | the container could not be read reliably |
+| frame rate | `20 <= nominal_fps <= 61` | a rate outside this range makes the frame/second conversions wrong |
 | timebase drift | annotation grid vs `video_duration_s`, `<= 0.5 s` | a drifting timebase silently misaligns speech against pose |
 
-**Outcome.** 118,570 of 129,370 files eligible. Exclusions: 6,741
-`excluded_raster`, 2,955 `no_speech_activity`, 472 `too_short`, 439
-`no_video_stream`, 189 `incomplete_bundle`, 4 `timebase_drift`.
+There is **no VAD-based rule at this stage** — the population is built from the
+inventory and the annotation's timebase only, and whether a participant actually
+speaks is decided per window by `speech_seconds` in §5. The exclusion label
+`no_speech_activity` is the `charades` rule above; it is named for the reason
+rather than the mechanism, which is worth knowing when reading the counts.
+
+**Outcome.** 118,570 of 129,370 files eligible. Exclusions, summing to 10,800:
+6,741 `excluded_raster`, 2,955 `no_speech_activity` (all of them `charades`),
+472 `too_short`, 439 `no_video_stream`, 189 `incomplete_bundle`, 4
+`timebase_drift`. `probe_failed` and `unusable_frame_rate` exclude nothing on
+this corpus — the first reason recorded per file is the one reported, and
+neither is ever first.
 
 **Relation to the goal.** Purely preparatory; it removes nothing on gesture
 grounds.
@@ -127,7 +137,22 @@ measurement parameters **and the source of `gesture.py` and
 a measurement invalidates every shard automatically, and a `--limit` smoke test
 cannot make the real scan a no-op.
 
+**Parameters.** Window 30.0 s, hop 10.0 s. 30 s is long enough for a gesture
+pattern to show and short enough that a reviewer could watch one; the hop makes
+neighbouring windows overlap, so a gesture-dense stretch is found wherever it
+starts and selection vetoes the overlap later.
+
+**Pass/fail.** None. This stage makes no decisions — it only measures. A file
+that cannot be read at all is recorded as `gesture_status != "ok"` and fails
+tier 1's first clause rather than being silently dropped here.
+
 **Outcome.** 2,423,304 windows over 7,550 hours. Zero read errors.
+
+**Limitations.** The hop means a gesture shorter than 10 s can fall between two
+window centres and be diluted in both. Windows are also fixed-length, so a
+40-second continuous gesture sequence is represented as two overlapping
+30-second views rather than as one span; selection then keeps at most one of
+them.
 
 ---
 
@@ -166,8 +191,10 @@ count, however fast it is. `test_realistic_jitter_in_place_is_not_gesture` and
 
 Gesturing frames are merged into **episodes**: gaps shorter than 0.25 s are
 closed, then runs shorter than 0.30 s are dropped. An episode counts as
-co-speech if it overlaps an utterance (a VAD segment of at least 0.80 s) by at
-least 0.20 s.
+co-speech if it overlaps *any* speech by at least 0.20 s. The 0.80 s minimum is
+separate — it defines what counts as an **utterance** for
+`speech_segments_covered`, so a very short vocalisation cannot be one of the
+utterances a gesture is required to cover.
 
 **Why.** It converts "how much motion" into "how many separate times, and for
 how long each" — which is the distinction between gesturing and adjusting your
@@ -181,7 +208,7 @@ Per window, about 35 values. The ones the decisions read:
 |---|---|
 | `gesture_frac_speech` | share of speaking frames that are gesturing |
 | `gesture_seconds_speech` | absolute seconds of gesture during speech |
-| `gesture_speech_ratio` | gesture rate while speaking ÷ while silent |
+| `gesture_speech_ratio` | `(speech_rate + 0.02) / (silence_rate + 0.02)`; the smoothing stops a participant who is simply never still while silent from producing an unbounded ratio |
 | `episode_count_speech`, `episode_median_s` | how many episodes, and how long each |
 | `speech_segments_covered` | share of utterances containing an episode |
 | `wrist_excursion_p90_mm`, `elbow_excursion_p90_mm` | p90 distance from the within-window median position |
@@ -243,7 +270,7 @@ without also deleting the modest gesturer. Their job is to remove what is
 |---|---:|---|---:|
 | `smplh_valid_frac` | `>= 0.90` | mostly-untracked windows | 224,822 |
 | `smplh_longest_invalid_s` | `<= 1.0 s` | a continuous tracking break, as opposed to scattered occluded frames | 73,168 |
-| `hand_frozen_frac` | `<= 0.05` | hand-pose vectors bit-identical to the previous frame — the measured damage behind an invalid frame | **0** |
+| `hand_frozen_frac` | `<= 0.05` | hand-pose vectors bit-identical to the previous frame — the measured damage behind an invalid frame | 0 (36,087 violate) |
 | `kp_conf_p10` | `>= 0.30` | the detector did not find the person | 2 |
 | `implausible_frac` | `<= 0.002` | sustained wrist speed above 4 m/s | 195 |
 
@@ -252,9 +279,14 @@ Validity is gated on the *window*, not the file. An earlier version required
 62.6% of V00 — more than every other check combined — for exactly the case the
 brief rules out of scope: a hand briefly leaving the image.
 
-`hand_frozen_frac` fires **zero times** in 2.42 M windows. It is retained
-because it is cheap and because its absence is itself informative, but it should
-be understood as inert on this corpus rather than as load-bearing.
+**Read that last column carefully.** It counts windows whose *first* failing
+clause is this one, which is what makes the table a funnel. It is not the number
+of windows that violate the clause. `hand_frozen_frac` is the clearest case:
+36,087 windows (1.5%) exceed 0.05, but every one of them already failed an
+earlier clause, so the funnel attributes none to it. The clause is doing work;
+it is just never the first thing wrong with a window. The same caveat applies to
+every row — `channels_disagree` shows 10 because `consistency_r` is applied
+last, not because only 10 windows disagree.
 
 ### Co-speech gesture
 
@@ -285,8 +317,31 @@ necessary and neither implies the other.
 | `consistency_r` | `>= 0.45` | 10 |
 | `step_cosine_p50` | `>= -0.30` | 21,115 |
 
-Both are near-inert at these values — `step_cosine_p50`'s pool 10th percentile
-is 0.08, well above the −0.30 cut. That headroom is used in §6.
+Both are applied **last**, because both are uninterpretable before the gesture
+clauses have established that there is motion to measure: two near-static
+channels correlate at chance, and a wrist that never moves produces no steps to
+take a direction from. That ordering is why their funnel counts are small — not
+because the clauses are inert. Over all 2.42 M windows, 940,302 violate
+`step_cosine_p50 >= -0.30`; they simply fail something earlier first.
+
+What *is* true is that these thresholds leave headroom. Among the windows that
+survive to become candidates, `step_cosine_p50` has a 10th percentile of +0.06
+and a median of +0.60 — the −0.30 floor is far below the surviving
+distribution, so a much higher cut is available to a stage that runs after
+selection. §6 uses it.
+
+**Limitations.**
+
+- These thresholds are **not calibrated against labels.** They were set from
+  the corpus distribution and from the failure modes the v0 pipeline produced.
+  The labelled data available was all drawn from files that had *already passed*
+  these gates, so it can say nothing about what they wrongly reject. This is the
+  single largest unvalidated surface in the pipeline.
+- `hand_frozen_frac` fires zero times and is effectively inert here.
+- `consistency_r` and `step_cosine_p50` are near-inert at tier-1 values; their
+  working thresholds are in §6, and the reason they are loose here is that both
+  are uninterpretable until the gesture clauses have established there is motion
+  to measure.
 
 **Outcome.** 414,504 of 2,423,304 windows qualify (17.1%).
 
@@ -297,7 +352,7 @@ overlapping windows vetoed, at most 8 clips per file and at most 12 files per
 participant. The caps exist because one V00 participant appears in 221 files and
 an unbalanced training set is a worse training set even when every clip is good.
 
-**Outcome.** 73,883 candidate clips / 615.7 hours over 31,815 files and 3,724
+**Outcome.** 73,883 candidate clips / 615.6 hours over 31,815 files and 3,724
 participants.
 
 ---
@@ -306,6 +361,11 @@ participants.
 
 **What it does.** Decides, for each candidate clip, whether it is co-speech
 gesture data. This is the step that replaced manual review.
+
+**Signals.** Only the per-window measures already in `candidates.parquet` —
+no media is read and no new measurement is computed, except `articulation_ratio`
+which is derived from two existing columns. That is why re-tuning a tier-2
+threshold costs seconds.
 
 **Why it exists separately from §5.** §5 is a filter over 2.4 M windows that
 must not be strict about degree. What a reviewer added on top was a judgement of
@@ -425,7 +485,7 @@ Peak amplitude is therefore **not** treated as evidence of gesturing.
 ### 6.4 What a clip carries out of this step
 
 Every clip — kept or dropped — carries `gesture_quality`, the four `dim_*`
-scores, `articulation_ratio`, a `flags` string listing **every** clause it
+scores, `articulation_ratio`, an `exclusion_flags` string listing **every** clause it
 failed, and `fail_stage` naming the first. Flags are not short-circuited:
 diagnosing a threshold needs the whole picture, and the funnel view needs the
 first. So a downstream reader can re-threshold without re-running anything:
@@ -442,12 +502,16 @@ files and 3,504 participants.
 **Measured against 90 held-out human labels** — files reviewed by hand with
 audio, all of which had already passed tier 1, so this is tier 2's own accuracy:
 
-| | value | baseline: accept every tier-1 candidate |
-|---|---:|---:|
-| precision | **0.936** | 0.904 |
-| recall | **0.948** | 1.000 |
-| specificity | **0.615** (8 of 13 rejects caught) | 0.385 |
-| accuracy | **0.900** | 0.867 |
+| | accept every tier-1 candidate | + disqualifiers only | + quality score (**shipped**) |
+|---|---:|---:|---:|
+| precision | 0.856 | 0.904 | **0.936** |
+| recall | 1.000 | 0.974 | **0.948** |
+| specificity | 0.000 | 0.385 | **0.615** |
+| accuracy | 0.856 | 0.889 | **0.900** |
+
+Both tier-2 layers carry roughly equal weight: the disqualifiers take precision
+from 0.856 to 0.904 and specificity from 0 to 0.385, and the score takes them
+the rest of the way to 0.936 and 0.615. Neither alone would do.
 
 Bootstrap 95% intervals: precision [0.875, 0.987], recall [0.895, 0.988]. On a
 second, deliberately boundary-enriched label set (134 items, sampled evenly
@@ -500,11 +564,18 @@ full set of conditions — but they are not doing work.
 
 **What it does.** Writes `accepted_clips.csv` — one row per qualifying clip, a
 contiguous `[start_frame, end_frame)` range of one participant file, carrying
-identity, frame range, every measure and every tier-2 score.
+identity, frame range, every measure a gate or qualifier reads, and every
+tier-2 score. It is a curated subset of the ~35 measured columns, not all of
+them; `qualified_clips.parquet` holds the complete set for every candidate,
+kept or dropped.
 
 **Why it is a manifest and not a copy.** The release is read-only and 40 TB. A
 frame-range list costs kilobytes, never diverges from the source, and can be
 re-filtered without re-exporting.
+
+**Pass/fail.** A clip appears iff `qualified` is true. No other condition, and
+in particular no verdict: moving `review_verdicts.jsonl` aside and re-running
+produces a byte-identical file.
 
 Also written, when a verdict log exists: `reviewed_clips.csv` and
 `accepted_clips_with_audio.csv` (§9), and an **agreement report** comparing the
@@ -512,21 +583,48 @@ automated decision against every verdict it can join to. That comparison is a
 measurement in the summary, not an assumption, so a regression in tier 2 appears
 as a number.
 
+**Outcome.** `accepted_clips.csv`: 50,741 clips / 422.8 hours / 24,204 files /
+3,504 participants. `reviewed_clips.csv`: 1,030 clips / 8.6 hours.
+
+**Limitations.** The manifest is only as good as the source tree it points into;
+it carries no checksum of the NPZ files, so a corrupted or re-released source
+would not be detected here. That is what §8's `verify` is for, and it samples
+rather than checking every row.
+
 ---
 
 ## 8. Export and verify
 
-`export` resolves the four source paths per row (`.npz`, `.wav`, `.mp4`,
-`.json`, all relative to `source_root`) and writes `export/DATASET.md`, a card
-readable by someone who will never run the pipeline. `seamless_curation.dataset`
-turns a row into pose, hands, audio and clip-relative VAD, reading only the
-frames the row names.
+**What they do.** `export` resolves the four source paths per row (`.npz`,
+`.wav`, `.mp4`, `.json`, all relative to `source_root`), writes both tiers as
+CSV, and generates `export/DATASET.md` — a card readable by someone who will
+never run the pipeline. `verify` samples manifest rows and reads them back out
+of the release.
 
-`verify` samples manifest rows and reads them back out of the release: checks
-the NPZ slice is the promised length, that the upper-body block is `(n, 13, 3)`,
-and that speech seconds recomputed from the released VAD match the manifest to
-within 0.5 s. It reads the source tree and nothing else, so it also confirms the
-source is intact.
+**Why.** A manifest is a promise about a tree it does not own. `export` makes
+the promise usable without knowing the release layout;
+`seamless_curation.dataset.load_clip` turns a row into pose, hands, audio and
+clip-relative VAD, reading only the frames the row names. `verify` is what
+stops the promise from silently going stale.
+
+**Signals.** `export` reads the manifests and `manifest_summary.json` (for the
+agreement figures printed in the card). `verify` reads the **source tree** and
+nothing else.
+
+**Criteria.** `verify` checks, per sampled row: the NPZ slice is exactly the
+promised number of frames; the upper-body block is `(n, 13, 3)`; and speech
+seconds recomputed from the released VAD match the manifest to within 0.5 s.
+
+**Pass/fail.** Any row failing any check is reported in `failures`; the command
+reports the list rather than raising, so one bad row does not hide the rest.
+
+**Outcome.** At the current manifest, `verify --sample 80` checks 80 rows and
+reports zero failures across 45,641,520 upper-body pose frames.
+
+**Limitations.** `verify` samples. It establishes that the manifest and the
+source agree where checked, not everywhere. It also cannot detect a source file
+that was replaced with a *different but equally well-formed* recording — there
+is no content hash of the release.
 
 ---
 
@@ -543,7 +641,8 @@ They exist to produce labelled data:
 
 Their output is used for three things, all of them development: calibrating
 tier-2 thresholds, validating the automated decision, and the
-`reviewed_clips.csv` subset for anyone who wants per-clip human sign-off.
+`reviewed_clips.csv` subset. That subset is 17% human by row; the rest is
+model review, so it is a labelled set rather than a human-signed one.
 
 **They are never required.** The production manifest is written whether or not
 the verdict log exists, and no verdict can add a clip to it or remove one — a
@@ -583,7 +682,7 @@ resting at exactly zero would trip `hand_frozen_frac` spuriously.
 
 The suite also pins properties of the rule itself: ramps are clipped and
 monotone; a non-finite measurement fails its clause rather than passing;
-`flags` lists every failure while `fail_stage` names the first; the funnel
+`exclusion_flags` lists every failure while `fail_stage` names the first; the funnel
 accounts for every clip and reports every clause including the ones that never
 fire.
 

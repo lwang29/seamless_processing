@@ -320,3 +320,39 @@ def test_verify_catches_a_frame_range_that_runs_off_the_end(tmp_path: Path, mode
 
     summary = verify_manifest(config, sample=1)
     assert summary["failures"] and "promised 900 frames" in summary["failures"][0]
+
+
+def test_a_corrupt_verdict_log_cannot_take_down_the_production_manifest(run) -> None:
+    """Review is a development input, so it must not be able to fail the build.
+
+    If a malformed verdict log aborted `manifest`, review would be back in the
+    critical path by the back door — the one thing this design exists to
+    prevent. The production file is written before the review artefacts are
+    attempted, and a failure there is reported rather than raised.
+    """
+
+    run.verdict_log.parent.mkdir(parents=True, exist_ok=True)
+    run.verdict_log.write_text('{"review_item_id": "r1", "verdict":\n', encoding="utf-8")
+
+    summary = build_manifests(run)
+    manifest = pd.read_csv(run.accepted_clips_path)
+
+    assert summary["accepted_clips"] == 5, "production output must be unaffected"
+    assert len(manifest) == 5
+    assert summary["review"]["reviewed_items"] == 0
+    assert "error" in summary["review"] or "note" in summary["review"]
+
+
+def test_a_reject_bound_to_the_wrong_file_is_still_caught(run) -> None:
+    """The integrity check covers every verdict, not only the accepts.
+
+    A mis-bound reject never reaches a manifest, so an accepts-only check would
+    miss it — but it still corrupts the agreement figures, which is where a
+    mis-binding actually does its damage.
+    """
+
+    store = VerdictStore(run.verdict_log)
+    store.append(Verdict("r1", "reject", "ann", file_id="SOMEONE_ELSE"))
+
+    with pytest.raises(ValueError, match="name a different file"):
+        build_manifests(run)
