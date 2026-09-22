@@ -119,12 +119,72 @@ def test_tracking_jitter_is_not_mistaken_for_gesture(model_root) -> None:
 
 
 def test_global_body_movement_is_not_gesture(model_root) -> None:
-    """400 mm of whole-body translation, arms rigid relative to the torso."""
+    """A participant turning to face their partner, arms rigid on the torso.
 
-    result = decide(model_root, shoulder_swing_deg=0.0, global_drift_mm=400.0, episodic=True)
+    This asserts the *mechanism*, not just the outcome, because the outcome
+    alone is uninformative: a bundle with no arm motion is rejected whether or
+    not the torso frame works, so a test that only checks "rejected" would pass
+    on a pipeline that had no global-motion handling at all. An earlier version
+    of this test did exactly that — it drove ``smplh:translation``, which
+    nothing in the pipeline reads (forward kinematics puts the pelvis at the
+    origin), so it demonstrated nothing.
 
+    So: drive a 50 deg whole-body yaw, show the joints genuinely move in world
+    coordinates, and show the torso-frame measures see none of it.
+    """
+
+    import numpy as np
+
+    from seamless_curation.smplh_kinematics import L_WRIST, forward_kinematics
+
+    bundle = make_bundle(shoulder_swing_deg=0.0, global_yaw_deg=50.0, episodic=True)
+
+    # The body really does move: reconstruct world-frame joints and measure.
+    pose = np.concatenate(
+        [
+            bundle.payload["smplh:global_orient"][:, None, :],
+            bundle.payload["smplh:body_pose"],
+            bundle.payload["smplh:left_hand_pose"],
+            bundle.payload["smplh:right_hand_pose"],
+        ],
+        axis=1,
+    )
+    world, _, _ = forward_kinematics(pose, str(model_root))
+    travelled_mm = float(
+        np.linalg.norm(world[:, L_WRIST].max(axis=0) - world[:, L_WRIST].min(axis=0)) * 1000
+    )
+    assert travelled_mm > 100.0, "fixture must actually move the body in the world"
+
+    # And the pipeline sees none of it.
+    result = decide(model_root, shoulder_swing_deg=0.0, global_yaw_deg=50.0, episodic=True)
+
+    assert result["wrist_range_mm"] < 1.0, "torso frame must remove whole-body rotation"
+    assert result["gesture_frac_speech"] < 0.05
     assert not result["accepted"]
     assert "static_while_speaking" in result["exclusion_flags"]
+
+
+def test_pure_translation_is_invisible_by_construction(model_root) -> None:
+    """``smplh:translation`` is never read, so it cannot be mistaken for gesture.
+
+    Worth stating as a test rather than a comment: it is the reason the
+    pipeline needs no threshold for camera or body translation at all.
+    """
+
+    still = decide(model_root, shoulder_swing_deg=0.0, episodic=True)
+    drifting = decide(model_root, shoulder_swing_deg=0.0, global_drift_mm=400.0, episodic=True)
+
+    assert drifting["wrist_range_mm"] == pytest.approx(still["wrist_range_mm"])
+    assert drifting["gesture_frac_speech"] == pytest.approx(still["gesture_frac_speech"])
+
+    gesturing = decide(model_root, shoulder_swing_deg=55.0, episodic=True)
+    drifting_and_gesturing = decide(
+        model_root, shoulder_swing_deg=55.0, global_drift_mm=400.0, episodic=True
+    )
+    assert drifting_and_gesturing["accepted"] and gesturing["accepted"]
+    assert drifting_and_gesturing["wrist_range_mm"] == pytest.approx(
+        gesturing["wrist_range_mm"]
+    ), "translation must not change the measurement in either direction"
 
 
 def test_a_single_brief_adjustment_is_not_gesturing(model_root) -> None:
@@ -201,7 +261,7 @@ def test_a_missing_measurement_fails_its_clause_rather_than_passing() -> None:
     good = {column: 1e6 for column, _, _ in RAMPS.values()}
     good.update({column: 1e6 for column, _, _, _ in DISQUALIFIERS})
     good.update(window_seconds=30.0, file_id="f", clip_id="c", torso_travel_mm_s_p50=1.0,
-                arm_speed_speech_p50_mm_s=1e6)
+                arm_speed_p50_mm_s=1e6)
     rows = [dict(good), dict(good, step_cosine_p50=np.nan), dict(good, consistency_r=np.inf)]
     rows[2]["consistency_r"] = np.nan
     scored = qualify(pd.DataFrame(rows), Qualifiers())
@@ -216,7 +276,7 @@ def test_flags_list_every_failure_and_fail_stage_names_the_first() -> None:
     row = {column: -1e6 for column, _, _, _ in DISQUALIFIERS}
     row.update({column: 0.0 for column, _, _ in RAMPS.values()})
     row.update(window_seconds=30.0, file_id="f", clip_id="c",
-               torso_travel_mm_s_p50=1e6, arm_speed_speech_p50_mm_s=0.0)
+               torso_travel_mm_s_p50=1e6, arm_speed_p50_mm_s=0.0)
     scored = qualify(pd.DataFrame([row]), Qualifiers())
 
     flags = scored["exclusion_flags"].iloc[0].split(";")
@@ -231,7 +291,7 @@ def test_articulation_ratio_survives_a_motionless_torso() -> None:
     """Dividing by a still torso must not produce inf and must not fail the clip."""
 
     frame = pd.DataFrame({"torso_travel_mm_s_p50": [0.0, 1e-9, 20.0],
-                          "arm_speed_speech_p50_mm_s": [200.0, 200.0, 200.0]})
+                          "arm_speed_p50_mm_s": [200.0, 200.0, 200.0]})
     ratio = articulation_ratio(frame)
 
     assert np.isfinite(ratio).all()
@@ -245,7 +305,7 @@ def test_funnel_accounts_for_every_clip() -> None:
         row = {column: 1e6 for column, _, _, _ in DISQUALIFIERS}
         row.update({column: low + quality * (high - low) for column, low, high in RAMPS.values()})
         row.update(window_seconds=30.0, file_id="f", clip_id=f"c{quality}",
-                   torso_travel_mm_s_p50=1.0, arm_speed_speech_p50_mm_s=1e6)
+                   torso_travel_mm_s_p50=1.0, arm_speed_p50_mm_s=1e6)
         rows.append(row)
     scored = qualify(pd.DataFrame(rows), Qualifiers())
     funnel = qualification_funnel(scored)
@@ -265,7 +325,7 @@ def test_the_flags_column_is_not_shadowed_by_a_pandas_attribute() -> None:
     row = {column: 1e6 for column, _, _, _ in DISQUALIFIERS}
     row.update({column: 1e6 for column, _, _ in RAMPS.values()})
     row.update(window_seconds=30.0, file_id="f", clip_id="c",
-               torso_travel_mm_s_p50=1.0, arm_speed_speech_p50_mm_s=1e6)
+               torso_travel_mm_s_p50=1.0, arm_speed_p50_mm_s=1e6)
     scored = qualify(pd.DataFrame([row]), Qualifiers())
 
     assert "exclusion_flags" in scored.columns

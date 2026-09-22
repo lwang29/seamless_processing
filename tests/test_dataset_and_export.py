@@ -231,3 +231,40 @@ def test_exported_rows_carry_the_scores_the_docs_tell_users_to_filter_on() -> No
     for column in SCORE_COLUMNS:
         assert column in shaped.columns, f"export dropped {column}"
     assert "gesture_quality" in shaped.columns
+
+
+def test_both_exported_tiers_share_one_schema() -> None:
+    """`DATASET.md` documents one column list for both files.
+
+    `reviewed_clips.csv` is written from MANIFEST_COLUMNS, which predates
+    tier 2 and lacks the score columns, so the two tiers drifted apart: a
+    filter written against the accepted tier raised KeyError on the reviewed
+    one. The export joins the missing columns back on.
+    """
+
+    from seamless_curation.export import (
+        MEASURE_COLUMNS, SCORE_COLUMNS, IDENTITY_COLUMNS, PATH_COLUMNS,
+        PROVENANCE_COLUMNS, _shape,
+    )
+
+    everything = IDENTITY_COLUMNS + MEASURE_COLUMNS + SCORE_COLUMNS
+    row = {c: 1.0 for c in everything}
+    row.update(start_frame=0, end_frame=900, file_id="f", clip_id="c",
+               source_relbase="a/b", vendor="V00", participant_id="0001", exclusion_flags="")
+    accepted = _shape(pd.DataFrame([row]), "accepted", False)
+    reviewed = _shape(pd.DataFrame([row]), "reviewed", True)
+
+    assert list(accepted.columns) == list(reviewed.columns)
+
+
+def test_an_empty_manifest_reads_back_as_an_empty_table() -> None:
+    """A run whose thresholds admitted nothing is legitimate, not a crash."""
+
+    import tempfile
+
+    directory = Path(tempfile.mkdtemp())
+    pd.DataFrame().to_csv(directory / "empty.csv", index=False)
+
+    frame = load_manifest(directory / "empty.csv")
+    assert frame.empty
+    assert list(iter_clips(frame, directory, with_audio=False)) == []

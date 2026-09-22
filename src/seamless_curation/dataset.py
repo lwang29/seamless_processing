@@ -124,9 +124,17 @@ ID_COLUMNS: tuple[str, ...] = (
 
 
 def load_manifest(path: str | Path) -> pd.DataFrame:
-    """Read a manifest CSV, keeping frame indices integral and ids textual."""
+    """Read a manifest CSV, keeping frame indices integral and ids textual.
 
-    frame = pd.read_csv(path, dtype={column: str for column in ID_COLUMNS})
+    A manifest with no rows is a legitimate state — a run whose thresholds
+    admitted nothing — and must read back as an empty table rather than
+    raising, so a downstream loop over it is a no-op instead of a crash.
+    """
+
+    try:
+        frame = pd.read_csv(path, dtype={column: str for column in ID_COLUMNS})
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(columns=list(ID_COLUMNS))
     for column in ("start_frame", "end_frame"):
         if column in frame.columns:
             frame[column] = frame[column].astype(int)
@@ -167,9 +175,15 @@ def load_clip(
 ) -> Clip:
     """Load the frames one manifest row names.
 
-    Only the named slice is read: the NPZ is opened lazily and the WAV is seeked
-    to, so loading a 30-second clip out of a four-minute recording costs a
-    30-second read, not a four-minute one.
+    **Audio is a true seek**: ``soundfile`` reads only the requested frames, so
+    a 30-second slice of a four-minute WAV costs a 30-second read.
+
+    **Pose is not.** ``archive["smplh:body_pose"][start:stop]`` decompresses the
+    whole array member and then slices it in memory — ``NpzFile`` has no partial
+    read. For these files that is a few tens of MB per member and it is why
+    ``with_audio=False`` does not make loading proportionally cheaper. If clip
+    loading ever becomes the bottleneck in a training loop, the fix is to
+    pre-extract the accepted ranges once, not to micro-optimise here.
     """
 
     if hasattr(row, "_asdict"):          # a namedtuple from df.itertuples()

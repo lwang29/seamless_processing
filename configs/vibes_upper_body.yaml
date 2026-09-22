@@ -57,7 +57,7 @@ qualify:
   min_episodes_speech: 3           # a single movement            (exclusion 5)
   min_episode_median_s: 0.55       # a string of twitches         (exclusion 5)
   min_speech_segments_covered: 0.60  # not sustained across utterances (exclusion 5)
-  min_articulation_ratio: 2.5      # motion is whole-body         (exclusion 4)
+  min_articulation_ratio: 2.0      # motion is whole-body         (exclusion 4)
   min_step_cosine_p50: 0.25        # tracker noise, by direction  (exclusion 3)
   min_consistency_r: 0.70          # the two channels disagree    (exclusion 3)
   # --- composite: weighted mean of posture/persistence/vigour/integrity ---

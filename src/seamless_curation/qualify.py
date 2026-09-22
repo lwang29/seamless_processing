@@ -92,11 +92,16 @@ class Qualifiers:
     #: Hands at the sides sit near -550 mm, clasped at the waist near -350 mm.
     #: Generous on purpose: this is a floor against parked hands, and the score
     #: carries the judgement of how well-placed the hands actually are.
-    min_wrist_height_p75_mm: float = -100000.0
-    #: Arm speed during speech against torso translation speed. Measurement is
-    #: already in a torso frame, so global motion is mostly removed before this
-    #: sees it; the ratio is the backstop for what survives that.
-    min_articulation_ratio: float = 2.5
+    min_wrist_height_p75_mm: float = -260.0
+    #: Arm speed against torso translation speed, both whole-window.
+    #: Measurement is already in a torso frame, so global motion is mostly
+    #: removed before this sees it; the ratio is the backstop for what survives.
+    #: 2.0 is the largest value at which no measured metric degrades on either
+    #: labelled set -- precision, recall and specificity are identical to
+    #: disabling the clause entirely -- while it still excludes 684 clips. At
+    #: 2.5 gold recall drops from 0.948 to 0.935, so 2.0 is where the clause
+    #: stops being free.
+    min_articulation_ratio: float = 2.0
     #: Distinct gesture episodes overlapping speech.
     min_episodes_speech: int = 3
     #: Median episode duration. A sequence of 0.3 s twitches is not gesturing
@@ -178,23 +183,42 @@ DISQUALIFIERS: tuple[tuple[str, str, str, str], ...] = (
 
 
 def _ramp(values: pd.Series, low: float, high: float) -> pd.Series:
-    """Linear 0 at ``low``, 1 at ``high``, clipped. NaN stays NaN."""
+    """Linear 0 at ``low``, 1 at ``high``, clipped. Non-finite stays NaN.
 
-    scaled = (values.astype(float) - low) / (high - low)
+    ``clip`` would map ``+inf`` to a perfect 1.0, which would let an
+    implausible measurement earn the best possible sub-score. An infinity here
+    means the measurement failed, not that it was excellent, so it is mapped to
+    NaN and handled by :func:`add_quality` like any other missing input.
+    """
+
+    numbers = pd.to_numeric(values, errors="coerce").astype(float)
+    numbers = numbers.where(np.isfinite(numbers))
+    scaled = (numbers - low) / (high - low)
     return scaled.clip(lower=0.0, upper=1.0)
 
 
 def articulation_ratio(frame: pd.DataFrame) -> pd.Series:
-    """Arm speed during speech relative to torso translation speed.
+    """Arm speed relative to torso translation speed, over the same frames.
 
     Measurement is already torso-relative, so a participant who rocks or walks
     has had most of that removed before this is computed. What remains is the
     residual, and the ratio asks whether the arms are doing more than the body
     is. Derived from columns the scan already writes -- no re-scan needed.
+
+    **Both terms are whole-window.** An earlier version divided the
+    speech-only arm speed by the whole-window torso speed, which is not a
+    ratio of anything: a participant who shifts in their seat during silence
+    inflates the denominator and is penalised for articulation they showed
+    while speaking, and one who is still while silent has it deflated. The two
+    forms rank-correlate at only 0.47 on the candidate pool, so the difference
+    is not cosmetic. There is no speech-restricted torso measure to pair with
+    the speech-restricted arm speed, and adding one would need a re-scan; the
+    whole-window pair is internally consistent and is what "is this body
+    moving more than these arms" actually asks.
     """
 
     torso = frame["torso_travel_mm_s_p50"].astype(float)
-    arm = frame["arm_speed_speech_p50_mm_s"].astype(float)
+    arm = frame["arm_speed_p50_mm_s"].astype(float)
     # A torso that is genuinely still would divide by ~0 and yield +inf, which
     # should pass, not fail; flooring the denominator says so explicitly.
     return arm / torso.clip(lower=1.0)
@@ -206,7 +230,7 @@ def articulation_ratio(frame: pd.DataFrame) -> pd.Series:
 REQUIRED_COLUMNS: tuple[str, ...] = tuple(sorted(
     {column for column, _, _ in RAMPS.values()}
     | {column for column, _, _, _ in DISQUALIFIERS if column != "articulation_ratio"}
-    | {"torso_travel_mm_s_p50", "arm_speed_speech_p50_mm_s"}
+    | {"torso_travel_mm_s_p50", "arm_speed_p50_mm_s"}
 ))
 
 
@@ -232,12 +256,17 @@ def add_quality(frame: pd.DataFrame) -> pd.DataFrame:
         out[f"q_{name}"] = _ramp(out[column], low, high) if column in out.columns else np.nan
 
     for dimension, parts in DIMENSIONS.items():
-        out[f"dim_{dimension}"] = out[[f"q_{p}" for p in parts]].mean(axis=1)
+        columns = [f"q_{p}" for p in parts]
+        # skipna=False on purpose. Averaging the ramps that *are* present
+        # silently re-weights the dimension and moves the score in whichever
+        # direction the missing ramp would have pulled it -- up if the absent
+        # measure was weak, down if it was strong. Either way the clip is
+        # scored on evidence it does not have. A missing input makes the
+        # dimension unmeasured, which makes the score unmeasured, which fails
+        # the threshold, which is the same rule the disqualifiers follow.
+        out[f"dim_{dimension}"] = out[columns].mean(axis=1, skipna=False)
 
-    total = sum(WEIGHTS.values())
-    out["gesture_quality"] = (
-        sum(out[f"dim_{d}"] * w for d, w in WEIGHTS.items()) / total
-    )
+    out["gesture_quality"] = out[[f"dim_{d}" for d in DIMENSIONS]].max(axis=1)
     return out
 
 

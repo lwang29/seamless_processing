@@ -31,7 +31,7 @@ Think of it as a funnel with four narrowings:
 3. **Which 30-second windows are usable?** (a wide net)
 4. **Which usable windows are actually good co-speech gesture?** (the real decision)
 
-We start with 129,370 recordings and end with 50,741 accepted clips — about
+We start with 129,370 recordings and end with 50,516 accepted clips — about
 **423 hours**.
 
 ---
@@ -189,8 +189,8 @@ top 10% on every activity measure. Ten of the twelve sampled moments show his
 arms hanging at his sides. His entire score comes from twice adjusting his
 beanie. If peak movement counted, he'd sail through.
 
-**Result:** 69% of candidate clips qualify — **50,741 clips, about 423 hours**,
-from 3,504 different participants.
+**Result:** 69% of candidate clips qualify — **50,516 clips, about 421 hours**,
+from 3,501 different participants.
 
 ---
 

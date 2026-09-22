@@ -84,6 +84,15 @@ def _keypoints(
     return points
 
 
+def _global_orient(frames: int, yaw_deg: float, phase: np.ndarray) -> np.ndarray:
+    """Whole-body yaw as an axis-angle about the vertical, swept by ``phase``."""
+
+    orient = np.zeros((frames, 3), dtype=np.float32)
+    if yaw_deg:
+        orient[:, 1] = np.deg2rad(yaw_deg) * phase
+    return orient
+
+
 def make_bundle(
     *,
     frames: int = FRAMES,
@@ -92,6 +101,7 @@ def make_bundle(
     jitter_mm: float = 0.0,
     single_adjustment: bool = False,
     one_handed: bool = False,
+    global_yaw_deg: float = 0.0,
     episodic: bool = False,
     gesture_in_silence: bool = False,
     global_drift_mm: float = 0.0,
@@ -105,6 +115,14 @@ def make_bundle(
     ``shoulder_swing_deg`` sweeps both shoulder joints, which moves the wrists in
     the torso frame and is therefore *gesture*. ``global_drift_mm`` translates the
     whole body via the root, which must **not** register as gesture.
+    ``global_drift_mm`` writes ``smplh:translation``, which **nothing in the
+    pipeline reads** -- forward kinematics places the pelvis at the origin, so
+    pure translation is invisible by construction rather than by a threshold.
+    ``global_yaw_deg`` is the parameter that actually exercises the torso frame:
+    it rotates the whole body through ``smplh:global_orient`` while the arms
+    stay rigid relative to the torso, which is what a participant turning to
+    face their partner looks like in the data.
+
     ``jitter_mm`` adds independent per-frame noise. ``single_adjustment`` replaces
     the sweep with one brief movement at the start. ``one_handed`` swings only the
     left shoulder and parks the right arm in the lap, which is the posture the
@@ -195,7 +213,7 @@ def make_bundle(
         "smplh:body_pose": body,
         "smplh:left_hand_pose": left,
         "smplh:right_hand_pose": right,
-        "smplh:global_orient": np.zeros((frames, 3), dtype=np.float32),
+        "smplh:global_orient": _global_orient(frames, global_yaw_deg, phase),
         "smplh:translation": translation,
         "smplh:is_valid": (
             np.ones(frames, dtype=bool) if smplh_valid is None else smplh_valid.astype(bool)

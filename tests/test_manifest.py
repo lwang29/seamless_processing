@@ -67,6 +67,7 @@ def candidate(review_item_id: str, clip_index: int = 0, **overrides) -> dict:
         "posture_spread_mm": 270.0,
         "episode_median_s": 1.9,
         "arm_speed_speech_p50_mm_s": 230.0,
+        "arm_speed_p50_mm_s": 210.0,
         "torso_travel_mm_s_p50": 24.0,
     }
     row.update(overrides)

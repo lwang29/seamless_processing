@@ -967,3 +967,12 @@ started at the same moment reported two unrelated failures that vanished on
 re-run. The agent reverted correctly and nothing was lost, but a transient
 "failure" with no reproducible cause is a bad half-hour. Give any agent that
 edits source `isolation: "worktree"`.
+
+**A rejection test proves nothing if the trivial case also gets rejected.** The
+global-motion test drove `smplh:translation`, which the pipeline never reads —
+FK puts the pelvis at the origin. So the fixture had no visible motion at all
+and the test passed because the arms were rigid, not because the torso frame
+worked. It would have kept passing with the torso frame deleted. Every negative
+fixture in a filter's test suite has this hazard: "was it rejected" is
+uninformative when everything uninteresting is also rejected. Assert that the
+input was non-trivial in the units the pipeline actually measures.

@@ -170,8 +170,21 @@ validated against `smplx` to under a micrometre.
 produces large joint velocities in world coordinates while their arms do nothing.
 In the torso frame those motions are, by construction, near zero. This is not a
 threshold that can be tuned wrong — it is a change of coordinates, and it is the
-primary defence against exclusion #4. `test_global_body_movement_is_not_gesture`
-drives 400 mm of whole-body translation with rigid arms and asserts rejection.
+primary defence against exclusion #4.
+
+Two separate mechanisms, worth distinguishing:
+
+- **Translation is not read at all.** Forward kinematics places the pelvis at
+  the origin and `smplh:translation` is never consumed, so a moving camera or a
+  participant walking across the room is invisible rather than thresholded.
+- **Rotation and posture are removed by the frame.** A participant turning to
+  face their partner changes every world-frame joint position; in the torso
+  frame it changes almost nothing.
+
+`test_global_body_movement_is_not_gesture` asserts the second by driving a 50°
+whole-body yaw, showing the wrist genuinely travels over 100 mm in world
+coordinates, and showing the pipeline measures under 1 mm of wrist range from
+it. `test_pure_translation_is_invisible_by_construction` asserts the first.
 
 ### 4.2 Speed **and** travel — exclusion #3
 
@@ -403,7 +416,7 @@ fatal and nothing compensates, because these are not "less gesture", they are
 | `episode_count_speech` | `>= 3` | #5 | a single movement |
 | `episode_median_s` | `>= 0.55 s` | #5 | a string of twitches rather than gestures |
 | `speech_segments_covered` | `>= 0.60` | #5 | gesture not sustained across utterances |
-| `articulation_ratio` | `>= 2.5` | #4 | motion mostly whole-body, not arms |
+| `articulation_ratio` | `>= 2.0` | #4 | motion mostly whole-body, not arms |
 | `step_cosine_p50` | `>= 0.25` | #3 | tracker noise — direction, not magnitude |
 | `consistency_r` | `>= 0.70` | #3 | the two channels disagree |
 
@@ -435,7 +448,7 @@ one, and two differently-sampled sets give two different F1 optima (0.32 and
 sample, precision (0.936), recall (0.948) and specificity (0.615) are identical
 for every threshold from 0.34 to 0.40, so 0.34 is the smallest value delivering
 the full measurable quality gain, and therefore the one that keeps the most data
-(422.8 h against 396.3 h at 0.40) and the highest recall. The rule is stated in
+(420.9 h against 396.3 h at 0.40) and the highest recall. The rule is stated in
 [`../reports/18_automated_qualification.md`](../reports/18_automated_qualification.md)
 §4.3, and the full trade-off curve is §4.1 there.
 
@@ -496,8 +509,8 @@ stricter = manifest[manifest.gesture_quality > 0.6]
 
 ### 6.5 Outcome and measured accuracy
 
-50,741 of 73,883 candidate clips qualify (68.7%) — **422.8 hours** over 24,204
-files and 3,504 participants.
+50,516 of 73,883 candidate clips qualify (68.4%) — **420.9 hours** over 24,114
+files and 3,501 participants.
 
 **Measured against 90 held-out human labels** — files reviewed by hand with
 audio, all of which had already passed tier 1, so this is tier 2's own accuracy:
@@ -524,16 +537,16 @@ First-failing-clause funnel:
 | clause | clips |
 |---|---:|
 | `too_little_speech` | 0 |
-| `static_while_speaking` | 4,958 |
-| `hands_parked_low` | 4,516 |
+| `static_while_speaking` | 4,949 |
+| `hands_parked_low` | 4,505 |
 | `too_few_episodes` | 0 |
 | `episodes_too_brief` | 256 |
-| `gesture_not_sustained` | 437 |
-| `motion_is_global` | 84 |
-| `motion_is_detector_noise` | 9,598 |
-| `channels_disagree` | 147 |
-| `below_quality_threshold` | 3,146 |
-| **qualified** | **50,741** |
+| `gesture_not_sustained` | 436 |
+| `motion_is_global` | 680 |
+| `motion_is_detector_noise` | 9,216 |
+| `channels_disagree` | 209 |
+| `below_quality_threshold` | 3,116 |
+| **qualified** | **50,516** |
 
 `too_little_speech` and `too_few_episodes` count zero because tier 1 already
 enforces them at the same or a stricter value. They are kept as explicit
@@ -583,8 +596,8 @@ automated decision against every verdict it can join to. That comparison is a
 measurement in the summary, not an assumption, so a regression in tier 2 appears
 as a number.
 
-**Outcome.** `accepted_clips.csv`: 50,741 clips / 422.8 hours / 24,204 files /
-3,504 participants. `reviewed_clips.csv`: 1,030 clips / 8.6 hours.
+**Outcome.** `accepted_clips.csv`: 50,516 clips / 420.9 hours / 24,114 files /
+3,501 participants. `reviewed_clips.csv`: 1,030 clips / 8.6 hours.
 
 **Limitations.** The manifest is only as good as the source tree it points into;
 it carries no checksum of the NPZ files, so a corrupted or re-released source
@@ -670,7 +683,8 @@ test ever written.
 | `test_subtle_but_genuine_gesture_is_not_discarded` | 22°, sustained, coherent | **accept** |
 | `test_static_hands_while_speaking_is_rejected` | clean tracking, no arm motion | reject |
 | `test_tracking_jitter_is_not_mistaken_for_gesture` | 16 mm/frame noise | reject |
-| `test_global_body_movement_is_not_gesture` | 400 mm translation, rigid arms | reject |
+| `test_global_body_movement_is_not_gesture` | 50° whole-body yaw, rigid arms | reject, and torso-frame range < 1 mm against >100 mm world travel |
+| `test_pure_translation_is_invisible_by_construction` | 400 mm translation | measurements bit-identical with and without it |
 | `test_a_single_brief_adjustment_is_not_gesturing` | one 0.8 s movement | reject |
 | `test_motion_unrelated_to_speech_is_rejected` | large motion, only in silence | reject |
 

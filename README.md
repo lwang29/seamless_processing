@@ -78,8 +78,8 @@ rejects everything satisfies every exclusion test ever written.
   read errors.
 - **Tier-1 gates:** 414,504 windows qualify (17.1%) → **73,883 candidate clips /
   615.7 hours** over 31,815 files and 3,724 participants.
-- **Tier-2 qualification:** **50,741 clips / 422.8 hours** over 24,204 files and
-  3,504 participants. This is `accepted_clips.csv`, produced with no reviewer.
+- **Tier-2 qualification:** **50,516 clips / 420.9 hours** over 24,114 files and
+  3,501 participants. This is `accepted_clips.csv`, produced with no reviewer.
 - **Measured accuracy.** Against 100 independently human-reviewed files (all of
   which had passed tier 1, so this is tier 2's own accuracy): **precision
   0.936, recall 0.948**, catching 8 of 13 files the human rejected. The

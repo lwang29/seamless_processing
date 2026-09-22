@@ -126,7 +126,7 @@ The two sets do not overlap.
 | 0.00 | 0.904 | 0.974 | 0.385 | 5/13 | 0.850 | 0.827 | 449.0 | 53,887 |
 | 0.24 | 0.904 | 0.974 | 0.385 | 5/13 | 0.850 | 0.827 | 445.2 | 53,424 |
 | 0.30 | 0.914 | 0.961 | 0.462 | 6/13 | 0.849 | 0.818 | 435.0 | 52,199 |
-| **0.34** | **0.936** | **0.948** | **0.615** | **8/13** | **0.854** | **0.800** | **422.8** | **50,741** |
+| **0.34** | **0.936** | **0.948** | **0.615** | **8/13** | **0.854** | **0.800** | **420.9** | **50,516** |
 | 0.40 | 0.936 | 0.948 | 0.615 | 8/13 | 0.860 | 0.782 | 396.3 | 47,558 |
 | 0.44 | 0.947 | 0.935 | 0.692 | 9/13 | 0.862 | 0.736 | 371.8 | 44,622 |
 | 0.48 | 0.945 | 0.896 | 0.692 | 9/13 | 0.870 | 0.727 | 342.8 | 41,140 |
@@ -170,7 +170,7 @@ identifying anything real here.
 On gold, precision (0.936), recall (0.948) and specificity (0.615) are
 **identical for every threshold from 0.34 to 0.40** — a plateau. Taking its left
 edge delivers the entire measurable quality benefit while keeping the most data
-(422.8 h against 396.3 h at 0.40) and the highest recall. It also happens to be
+(420.9 h against 396.3 h at 0.40) and the highest recall. It also happens to be
 the better choice on the stress set: dev recall is 0.800 at 0.34 against 0.782
 at 0.40 and 0.736 at 0.44.
 
@@ -202,8 +202,8 @@ and recall 0.800. Both numbers are true of different populations; the gold
 figures describe the corpus the filter actually runs on, the dev figures
 describe how it behaves when every case is hard.
 
-Output: **50,741 clips / 422.8 hours** over 24,204 files and 3,504 participants
-— 68.7% of candidate clips.
+Output: **50,516 clips / 420.9 hours** over 24,114 files and 3,501 participants
+— 68.4% of candidate clips.
 
 Agreement against the 569 model-labelled items is lower (precision 0.771,
 specificity 0.272) and should **not** be read as the automated decision doing
@@ -219,7 +219,7 @@ Removing each disqualifier in turn, threshold held at 0.34:
 
 | clause removed | gold precision | gold recall | gold specificity | hours | delta precision |
 |---|---:|---:|---:|---:|---:|
-| *(none — full rule)* | 0.936 | 0.948 | 0.615 | 422.8 | — |
+| *(none — full rule)* | 0.936 | 0.948 | 0.615 | 420.9 | — |
 | `hands_parked_low` | 0.912 | 0.948 | 0.462 | 448.4 | **−0.023** |
 | `motion_is_detector_noise` | 0.926 | 0.974 | 0.538 | 468.7 | **−0.010** |
 | `channels_disagree` | 0.936 | 0.948 | 0.615 | 424.0 | 0.000 |
@@ -227,8 +227,8 @@ Removing each disqualifier in turn, threshold held at 0.34:
 | `gesture_not_sustained` | 0.936 | 0.948 | 0.615 | 424.5 | 0.000 |
 | `motion_is_global` | 0.936 | 0.948 | 0.615 | 423.1 | 0.000 |
 | `static_while_speaking` | 0.936 | 0.948 | 0.615 | 426.3 | 0.000 |
-| `too_few_episodes` | 0.936 | 0.948 | 0.615 | 422.8 | 0.000 |
-| `too_little_speech` | 0.936 | 0.948 | 0.615 | 422.8 | 0.000 |
+| `too_few_episodes` | 0.936 | 0.948 | 0.615 | 420.9 | 0.000 |
+| `too_little_speech` | 0.936 | 0.948 | 0.615 | 420.9 | 0.000 |
 
 Only two clauses have a measurable effect on 90 labels — and they are the two
 §2 predicted from the AUC ranking: where the hands are carried, and whether the
@@ -277,7 +277,8 @@ measurement and both gate tiers.
 |---|---|---|
 | clean tracking, arms never move | rejected `static_while_speaking` | `test_static_hands_while_speaking_is_rejected` |
 | 16 mm/frame jitter (480 mm/s, 8× the speed floor) | rejected; `step_cosine_p50 < 0` | `test_tracking_jitter_is_not_mistaken_for_gesture` |
-| 400 mm whole-body translation, arms rigid | rejected | `test_global_body_movement_is_not_gesture` |
+| 50° whole-body yaw, arms rigid | rejected; torso-frame range <1 mm against >100 mm world travel | `test_global_body_movement_is_not_gesture` |
+| 400 mm pure translation | measurements bit-identical with and without | `test_pure_translation_is_invisible_by_construction` |
 | one 0.8 s movement then stillness | rejected | `test_a_single_brief_adjustment_is_not_gesturing` |
 | large sustained motion, only while silent | rejected; `gesture_frac_speech < 0.3` | `test_motion_unrelated_to_speech_is_rejected` |
 | 55° episodic two-handed gesturing | **accepted**, quality > 0.9 | `test_clear_co_speech_gesture_is_accepted` |
@@ -287,6 +288,20 @@ measurement and both gate tiers.
 The last row is the one that keeps this from degenerating. A filter that rejects
 everything satisfies every exclusion test ever written; the subtle case is the
 assertion that the false-negative safeguard is real rather than claimed.
+
+**One of these tests was vacuous and an adversarial audit caught it.** The
+global-motion case originally drove `smplh:translation` — a field the pipeline
+never reads, because forward kinematics places the pelvis at the origin. The
+bundle therefore contained no motion the pipeline could see, and the test passed
+because the arms were rigid, not because global motion was excluded. It would
+have gone on passing if the torso frame had been deleted.
+
+The general lesson is that asserting *the outcome* of a rejection proves
+nothing when the trivial case produces the same outcome: every negative fixture
+here is rejected, so "rejected" is uninformative unless the test also shows the
+input was non-trivial. The replacement drives a 50° whole-body yaw, asserts the
+wrist genuinely travels over 100 mm in world coordinates, and asserts the
+pipeline measures under 1 mm of wrist range from it — outcome *and* mechanism.
 
 Two fixture details were found the hard way and are worth recording. A single
 uninterrupted 30-second sweep is **one episode** and is correctly rejected by the
@@ -340,7 +355,7 @@ checked three ways:
   remove a qualifying clip, and no verdict column appears in the file.
 - **On the real corpus**: moving `review_verdicts.jsonl` aside and re-running
   `manifest` produced a byte-identical `accepted_clips.csv` (md5
-  `56dc79bfb05173dc6eba36afa8f7659f`, 50,741 clips / 422.8 h), with the summary
+  `56dc79bfb05173dc6eba36afa8f7659f`, 50,516 clips / 420.9 h), with the summary
   reporting `reviewed_items: 0` and no agreement block. Restoring the log
   reproduced the same md5 again.
 

@@ -88,15 +88,6 @@ def _add_paths(frame: pd.DataFrame, source_root: Path) -> pd.DataFrame:
     return frame
 
 
-def _ensure_fps(frame: pd.DataFrame, config: RunConfig) -> pd.DataFrame:
-    if "fps" in frame.columns and frame["fps"].notna().all():
-        return frame
-    population = pd.read_parquet(config.population_path)[["file_id", "nominal_fps"]]
-    frame = frame.merge(population, on="file_id", how="left")
-    frame["fps"] = frame.get("fps").fillna(frame["nominal_fps"]) if "fps" in frame else frame["nominal_fps"]
-    return frame.drop(columns=["nominal_fps"])
-
-
 def _shape(frame: pd.DataFrame, tier: str, reviewed: bool) -> pd.DataFrame:
     frame = frame.copy()
     frame["tier"] = tier
@@ -150,7 +141,16 @@ def build_export(config: RunConfig) -> dict[str, Any]:
         accepted = _add_paths(_shape(accepted, "accepted", False), config.source_root)
     accepted.to_csv(out / "clips_accepted.csv", index=False)
 
+    # The reviewed subset is written from MANIFEST_COLUMNS, which predates
+    # tier 2 and so lacks the score columns. Join them back on so both files
+    # have one schema -- DATASET.md documents one, and a downstream filter
+    # written against the accepted tier must not break on the reviewed one.
     reviewed = load(config.reviewed_clips_path)
+    if len(reviewed) and config.qualified_path.exists():
+        extra = [c for c in MEASURE_COLUMNS + SCORE_COLUMNS if c not in reviewed.columns]
+        if extra:
+            scores = pd.read_parquet(config.qualified_path, columns=["clip_id", *extra])
+            reviewed = reviewed.merge(scores, on="clip_id", how="left")
     if len(reviewed):
         reviewed = _add_paths(_shape(reviewed, "reviewed", True), config.source_root)
     reviewed.to_csv(out / "clips_reviewed.csv", index=False)

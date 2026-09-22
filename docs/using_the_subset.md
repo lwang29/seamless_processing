@@ -22,7 +22,7 @@ re-export.
 
 | file | clips | hours | files | participants | how it was decided |
 |---|---:|---:|---:|---:|---|
-| `clips_accepted.csv` | 50,741 | 422.8 | 24,204 | 3,504 | fully automated |
+| `clips_accepted.csv` | 50,516 | 420.9 | 24,114 | 3,501 | fully automated |
 | `clips_reviewed.csv` | 1,030 | 8.6 | 498 | 490 | automated, and a reviewer also accepted it |
 
 Both are under `/simurgh/group/lw29/seamless_cospeech_subset/`, next to a
