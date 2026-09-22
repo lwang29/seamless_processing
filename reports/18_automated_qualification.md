@@ -123,16 +123,16 @@ The two sets do not overlap.
 
 | threshold | gold precision | gold recall | gold specificity | rejects caught | dev precision | dev recall | hours | clips |
 |---:|---:|---:|---:|:---:|---:|---:|---:|---:|
-| 0.00 | 0.904 | 0.974 | 0.385 | 5/13 | 0.850 | 0.827 | 449.0 | 53,887 |
-| 0.24 | 0.904 | 0.974 | 0.385 | 5/13 | 0.850 | 0.827 | 445.2 | 53,424 |
-| 0.30 | 0.914 | 0.961 | 0.462 | 6/13 | 0.849 | 0.818 | 435.0 | 52,199 |
+| 0.00 | 0.904 | 0.974 | 0.385 | 5/13 | 0.850 | 0.827 | 446.9 | 53,632 |
+| 0.24 | 0.904 | 0.974 | 0.385 | 5/13 | 0.850 | 0.827 | 443.1 | 53,171 |
+| 0.30 | 0.914 | 0.961 | 0.462 | 6/13 | 0.849 | 0.818 | 433.0 | 51,966 |
 | **0.34** | **0.936** | **0.948** | **0.615** | **8/13** | **0.854** | **0.800** | **420.9** | **50,516** |
-| 0.40 | 0.936 | 0.948 | 0.615 | 8/13 | 0.860 | 0.782 | 396.3 | 47,558 |
-| 0.44 | 0.947 | 0.935 | 0.692 | 9/13 | 0.862 | 0.736 | 371.8 | 44,622 |
-| 0.48 | 0.945 | 0.896 | 0.692 | 9/13 | 0.870 | 0.727 | 342.8 | 41,140 |
-| 0.54 | 0.956 | 0.844 | 0.769 | 10/13 | 0.861 | 0.618 | 294.3 | 35,324 |
-| 0.60 | 0.950 | 0.740 | 0.769 | 10/13 | 0.846 | 0.500 | 239.8 | 28,781 |
-| 0.66 | 0.979 | 0.610 | 0.923 | 12/13 | 0.841 | 0.336 | 183.6 | 22,036 |
+| 0.40 | 0.936 | 0.948 | 0.615 | 8/13 | 0.860 | 0.782 | 394.7 | 47,365 |
+| 0.44 | 0.947 | 0.935 | 0.692 | 9/13 | 0.862 | 0.736 | 370.5 | 44,458 |
+| 0.48 | 0.945 | 0.896 | 0.692 | 9/13 | 0.870 | 0.727 | 341.6 | 40,993 |
+| 0.54 | 0.956 | 0.844 | 0.769 | 10/13 | 0.861 | 0.618 | 293.5 | 35,223 |
+| 0.60 | 0.950 | 0.740 | 0.769 | 10/13 | 0.846 | 0.500 | 239.2 | 28,711 |
+| 0.66 | 0.979 | 0.610 | 0.923 | 12/13 | 0.841 | 0.336 | 183.2 | 21,991 |
 
 Monotone and well-behaved on both sets, with no cliff. That is itself a result:
 the threshold is a **policy dial**, not a discovered constant.
@@ -220,13 +220,13 @@ Removing each disqualifier in turn, threshold held at 0.34:
 | clause removed | gold precision | gold recall | gold specificity | hours | delta precision |
 |---|---:|---:|---:|---:|---:|
 | *(none — full rule)* | 0.936 | 0.948 | 0.615 | 420.9 | — |
-| `hands_parked_low` | 0.912 | 0.948 | 0.462 | 448.4 | **−0.023** |
-| `motion_is_detector_noise` | 0.926 | 0.974 | 0.538 | 468.7 | **−0.010** |
-| `channels_disagree` | 0.936 | 0.948 | 0.615 | 424.0 | 0.000 |
-| `episodes_too_brief` | 0.936 | 0.948 | 0.615 | 423.8 | 0.000 |
-| `gesture_not_sustained` | 0.936 | 0.948 | 0.615 | 424.5 | 0.000 |
+| `hands_parked_low` | 0.912 | 0.948 | 0.462 | 446.4 | **−0.023** |
+| `motion_is_detector_noise` | 0.926 | 0.974 | 0.538 | 465.4 | **−0.010** |
+| `channels_disagree` | 0.936 | 0.948 | 0.615 | 422.1 | 0.000 |
+| `episodes_too_brief` | 0.936 | 0.948 | 0.615 | 421.9 | 0.000 |
+| `gesture_not_sustained` | 0.936 | 0.948 | 0.615 | 422.5 | 0.000 |
 | `motion_is_global` | 0.936 | 0.948 | 0.615 | 423.1 | 0.000 |
-| `static_while_speaking` | 0.936 | 0.948 | 0.615 | 426.3 | 0.000 |
+| `static_while_speaking` | 0.936 | 0.948 | 0.615 | 424.5 | 0.000 |
 | `too_few_episodes` | 0.936 | 0.948 | 0.615 | 420.9 | 0.000 |
 | `too_little_speech` | 0.936 | 0.948 | 0.615 | 420.9 | 0.000 |
 
@@ -237,9 +237,9 @@ motion is directionally coherent.
 This admits two readings and only one is supported.
 
 **It does not mean the other seven do nothing.** Corpus-wide they exclude real
-clips: `motion_is_detector_noise` 9,598, `static_while_speaking` 4,958,
-`hands_parked_low` 4,516, `gesture_not_sustained` 437, `episodes_too_brief` 256,
-`channels_disagree` 147, `motion_is_global` 84. They simply do not change the
+clips: `motion_is_detector_noise` 9,254, `static_while_speaking` 4,958,
+`hands_parked_low` 4,516, `gesture_not_sustained` 437, `motion_is_global` 684,
+`episodes_too_brief` 256, `channels_disagree` 146. They simply do not change the
 verdict on any of 90 particular files, which is unsurprising when the rarest
 fires on 0.1% of the corpus — the expected number of gold items affected is
 below one.

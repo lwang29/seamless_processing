@@ -537,14 +537,14 @@ First-failing-clause funnel:
 | clause | clips |
 |---|---:|
 | `too_little_speech` | 0 |
-| `static_while_speaking` | 4,949 |
-| `hands_parked_low` | 4,505 |
+| `static_while_speaking` | 4,958 |
+| `hands_parked_low` | 4,516 |
 | `too_few_episodes` | 0 |
 | `episodes_too_brief` | 256 |
-| `gesture_not_sustained` | 436 |
-| `motion_is_global` | 680 |
-| `motion_is_detector_noise` | 9,216 |
-| `channels_disagree` | 209 |
+| `gesture_not_sustained` | 437 |
+| `motion_is_global` | 684 |
+| `motion_is_detector_noise` | 9,254 |
+| `channels_disagree` | 146 |
 | `below_quality_threshold` | 3,116 |
 | **qualified** | **50,516** |
 
