@@ -976,3 +976,29 @@ worked. It would have kept passing with the torso frame deleted. Every negative
 fixture in a filter's test suite has this hazard: "was it rejected" is
 uninformative when everything uninteresting is also rejected. Assert that the
 input was non-trivial in the units the pipeline actually measures.
+
+**Two audit mutations were committed, and one shipped for a whole commit.** The
+adversarial audit's test-quality agent mutates the source to check the suite
+catches regressions, then reverts. It was killed by a session limit twice,
+mid-mutation, in a shared working tree:
+
+- `ae54488` shipped with `min_wrist_height_p75_mm = -100000.0` — the
+  `hands_parked_low` clause disabled entirely.
+- `2f13aaf` shipped with `gesture_quality` computed as `max()` over the four
+  dimensions instead of the weighted mean. That inflated the median score from
+  0.55 to 0.85 and admitted 2,807 extra clips.
+
+Both passed the full suite. The second is the instructive one: the suite
+asserted that `WEIGHTS` summed to 1.0 and that every dimension was wired to a
+ramp, but nothing asserted the weights were **used**. A test that checks a
+constant's value rather than its effect is decoration.
+
+Caught by noticing that a rebuild produced different headline numbers than the
+same inputs had produced twenty minutes earlier. Two defences added: a test
+that reproduces the weighted mean arithmetically and fails on max, min and the
+unweighted mean; and a check that walks every threshold looking for implausible
+magnitudes, which would have caught the -100000.0 immediately.
+
+The real lesson is the one already noted above and ignored: give any agent that
+edits source `isolation: "worktree"`. Committing while such an agent is live
+bakes its scratch state into history.

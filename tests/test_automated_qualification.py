@@ -331,3 +331,41 @@ def test_the_flags_column_is_not_shadowed_by_a_pandas_attribute() -> None:
     assert "exclusion_flags" in scored.columns
     assert "flags" not in scored.columns
     assert isinstance(scored.exclusion_flags, pd.Series)
+
+
+def test_the_dimension_weights_are_actually_applied() -> None:
+    """`gesture_quality` must be the weighted mean, not any other combination.
+
+    The suite previously asserted only that WEIGHTS summed to 1.0, which says
+    nothing about whether they are used. A mutation replacing the weighted mean
+    with `max(axis=1)` passed every test in this file and shipped in a commit:
+    it inflated the median score from 0.55 to 0.85 and admitted 2,800 extra
+    clips before it was caught by hand.
+
+    So: build rows whose dimensions differ, and check the result against the
+    weights arithmetically. Max, min, and the unweighted mean all fail this.
+    """
+
+    rows = []
+    for posture in (0.0, 1.0):
+        row = {column: low for column, low, _ in RAMPS.values()}
+        for name, (column, low, high) in RAMPS.items():
+            row[column] = high if (name in DIMENSIONS["posture"] and posture) else low
+        row.update({c: 1e6 for c, _, _, _ in DISQUALIFIERS})
+        row.update(window_seconds=30.0, file_id="f", clip_id=f"c{posture}",
+                   torso_travel_mm_s_p50=1.0, arm_speed_p50_mm_s=1e6)
+        rows.append(row)
+    scored = add_quality(pd.DataFrame(rows))
+
+    for _, row in scored.iterrows():
+        expected = sum(row[f"dim_{d}"] * w for d, w in WEIGHTS.items()) / sum(WEIGHTS.values())
+        assert row["gesture_quality"] == pytest.approx(expected), "not the weighted mean"
+
+    dims = scored[[f"dim_{d}" for d in DIMENSIONS]]
+    assert not np.allclose(scored["gesture_quality"], dims.max(axis=1)), "this is max, not a mean"
+    assert not np.allclose(scored["gesture_quality"], dims.mean(axis=1)), "weights are being ignored"
+
+    # Raising the posture dimension must raise the score by exactly its weight.
+    low, high = scored["gesture_quality"].iloc[0], scored["gesture_quality"].iloc[1]
+    delta = (scored["dim_posture"].iloc[1] - scored["dim_posture"].iloc[0]) * WEIGHTS["posture"]
+    assert high - low == pytest.approx(delta)

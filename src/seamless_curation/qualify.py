@@ -266,7 +266,10 @@ def add_quality(frame: pd.DataFrame) -> pd.DataFrame:
         # the threshold, which is the same rule the disqualifiers follow.
         out[f"dim_{dimension}"] = out[columns].mean(axis=1, skipna=False)
 
-    out["gesture_quality"] = out[[f"dim_{d}" for d in DIMENSIONS]].max(axis=1)
+    total = sum(WEIGHTS.values())
+    out["gesture_quality"] = (
+        sum(out[f"dim_{d}"] * w for d, w in WEIGHTS.items()) / total
+    )
     return out
 
 
