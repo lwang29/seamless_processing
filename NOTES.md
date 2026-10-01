@@ -1,11 +1,12 @@
 # Surprises, dead ends, and open questions
 
 A running log of things that were not obvious and cost time to find out. It is
-not a design document and not a record of decisions — the current pipeline is
-described step by step in `docs/pipeline.md`, summarised in `README.md`, and
-justified in `reports/17_cospeech_gesture.md` (measurement design) and
-`reports/18_automated_qualification.md` (the automated accept/reject decision
-that replaced manual review on 2026-09-21).
+not a design document and not a record of decisions — the current pipeline
+(annotate every recording and clip, since 2026-09-24) is described step by step
+in `docs/pipeline.md` and summarised in `README.md`. Everything above the
+2026-09-24 section was written while this repository *filtered* the release
+(git tag `v1-cospeech-filter`); its corpus facts mostly still hold, its
+statements about gates, review and the manifest describe code that is gone.
 
 Sections are in the order they were written, oldest first. The Session 1 and 2
 entries describe the corpus and the released annotations, and almost all of them
@@ -29,7 +30,9 @@ are still true; the v0 rounds they were written for are gone.
 - Only improvised dev retains adjacent tar copies (116 archives, 127.369 GiB).
   Counting both trees would nearly double improvised storage.
 - Transcript and VAD records are embedded together in each participant JSON.
-  No official metadata CSV or JSONL is staged locally.
+  No official metadata CSV or JSONL is staged locally. *(Later: Meta's
+  filelist/interactions/participants/relationships CSVs are staged at
+  `datasets/seamless_interaction_metadata/`; the catalog stage reads them.)*
 - NPZ has two profiles: nine core keys everywhere, plus 15 movement keys in V00
   only in the bounded union. `movement:is_valid` is `(N,1) float32`, whereas the
   SMPL-H and box flags are `(N,) bool`.
@@ -1002,3 +1005,91 @@ magnitudes, which would have caught the -100000.0 immediately.
 The real lesson is the one already noted above and ignored: give any agent that
 edits source `isolation: "worktree"`. Committing while such an agent is live
 bakes its scratch state into history.
+
+## Redesign: annotate everything (2026-09-24)
+
+Things that were not obvious while turning the filter into an annotator.
+
+**The I-segment of a file id is a prompt id.** 1,292 values over 64,751
+conversations; one prompt recurs in 1,550 sessions. A conversation is
+(vendor, session, prompt). The old render code had already been bitten once
+(partner speech drawn from the wrong file).
+
+**Meta's splits are not participant-disjoint in practice.** 26 participants sit
+in two splits (always spanning improvised and naturalistic), a quarter of dev
+interactions have a member with train files, and 7 of 51 `A`-suffix id stems
+have their two ids in different splits. Pairs never cross splits.
+
+**`interaction_type` disagrees with the prompt text for 9 prompts (8,007 files),**
+including the most used one (00000135, "collaborative_storytelling", whose text
+is a one-word-difference question). Speech behaviour follows the type, which
+fits Meta's off-by-one prompt caveat.
+
+**Meta copied some MOI annotations between the two members** (V03 session S0203
+especially; 7 of 36 1P pairs fully copied). Whole-list identity misses half of
+them (timestamps offset by 1 s); match per event.
+
+**The released audio is bleed-suppressed and denoised,** so the median of a
+track during partner-only speech is just the noise floor. v0's 7-13 dB "voice
+isolation" pooled overlap ticks; an energy-mean own-only vs partner-only
+difference reads ~17-24 dB on close mics and ~10 dB on the room camera. Exact-zero
+samples and floor-level ticks mostly measure how long the participant listens,
+not dropouts: a "zeros > 5%" dropout rule would have tagged half the corpus.
+
+**Meta's VAD sometimes stops early.** ~1.8% of V03 recordings have 20+ timed
+words starting after the last VAD interval, at the file's own-speech level; 226
+WAVs are > 1 s shorter than the video. Treating either as silence publishes
+false "silent"/"listening" clips, so speech past the annotated span is NA.
+
+**Posture labels drawn at the old cut are hard by construction.** On the 66
+selection-biased V00 file labels the new rules decide 43 (41 right) and call 23
+unclear: the two labelled groups overlap between knee ratios 0.39 and 0.41.
+Round 4's clean 0.406/0.508 separation held for 29 of those files only.
+
+**Expressivity channels double-count.** Active fraction is a threshold on wrist
+speed (Spearman 0.9) and SD-of-speed tracks amplitude (0.88); the score uses
+four distinct channels. Pooled across vendors, V02 reads 29-43% faster at
+matched speaking time, so the default rank is within vendor/rig.
+
+**The scan is I/O-bound on the network filesystem** (7.5 TB of WAV + NPZ; one
+reader per task managed ~6 MB/s at 100 tasks). Prefetching the next
+interactions' files on four threads made a smoke shard CPU-bound.
+
+**Home quota.** `/sailhome/lw29` is 20 GB with < 1 GB free; run outputs live
+under `/simurgh/group/lw29/seamless_annotations/`.
+
+**The previous run's outputs are archived, not in `outputs/`.** After the legacy
+review labels were exported (`<root>/legacy/gesture_review/`) and the report's
+reused-measure cross-check had read its window table, everything in
+`outputs/vibes_upper_body_v1/` except `review_verdicts.jsonl` (the only copy of
+the human verdicts, mode 0600) was archived to
+`/simurgh/group/lw29/archive/vibes_upper_body_v1_outputs_2026-09-25.tar`
+(1,559 files, `.sha256` alongside, member checksums verified before deletion).
+Extract it back into `outputs/vibes_upper_body_v1/` to re-run that cross-check.
+
+**The old review materials and the published subset are deleted (2026-09-30).**
+Once retiring them was confirmed, the following were deleted without an archive:
+the never-completed PI calibration (`dist/pi_review/`, `outputs/pi_calibration/`,
+`reports/pi_review_brief.md`), the published co-speech subset
+(`/simurgh/group/lw29/seamless_cospeech_subset/`), its gallery
+(`/simurgh/group/lw29/gallery_testing/`), and the review cards and clips
+(`artifacts/vibes_upper_body_v1/`). Three things survive. The human verdicts are
+in `outputs/vibes_upper_body_v1/review_verdicts.jsonl`. The verdicts, with the
+spans they judged, are also in `<root>/legacy/gesture_review/`, now the only copy
+of the spans. The code that built the subset is at the tag `v1-cospeech-filter`.
+
+Open questions:
+
+- Bin- and clip-level posture accuracy has never been labelled; a stratified
+  visual labelling round (sitting / standing / perched / mixed) per vendor would
+  replace the file-level evidence and could narrow V00's unclear band.
+- Partial audio dropouts: one known pair, no validated detector.
+- Scan-side fixes deferred to the next rescan (each changes the scan fingerprint,
+  so annotate would refuse the annotations_v1 shards): fill mid-recording VAD gaps
+  from timed words in `speech.speech_track` (today an annotate-time guard marks
+  those clips `vad_gap`); move the "unvalidated rule never decides sitting"
+  refinement from `annotate.aggregate_posture` into `posture.classify_bins`; in
+  `scan.measure_recording`, reset the partial row when a late exception makes a
+  recording 'unreadable' (latent: no recording hit it in annotations_v1, and
+  annotate now blanks measured fields of unmeasured rows defensively).
+

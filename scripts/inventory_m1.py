@@ -78,11 +78,25 @@ class Provenance:
     git_dirty: bool
 
 
+#: Where provenance is read from. The census was first run when the platform
+#: mounted ``.git`` read-only and history lived in ``.git-session``; that orphaned
+#: directory is now stale (hundreds of paths read as dirty against it), so the
+#: repository's own ``.git`` is preferred and ``.git-session`` is the fallback.
+GIT_DIR_NAMES = (".git", ".git-session")
+
+
 def _find_worktree(start: Path) -> Path:
     for candidate in (start, *start.parents):
-        if (candidate / ".git-session").is_dir():
+        if any((candidate / name).is_dir() for name in GIT_DIR_NAMES):
             return candidate.resolve()
-    raise ValueError(f"could not find .git-session above {start}")
+    raise ValueError(f"could not find a git directory ({', '.join(GIT_DIR_NAMES)}) above {start}")
+
+
+def _git_dir(worktree: Path) -> Path:
+    for name in GIT_DIR_NAMES:
+        if (worktree / name).is_dir():
+            return worktree / name
+    raise ValueError(f"no git directory in {worktree}")
 
 
 def _resolve_repo_path(worktree: Path, value: Any, field: str) -> Path:
@@ -165,7 +179,7 @@ def load_config(path: str | Path) -> InventoryConfig:
 def git_provenance(config: InventoryConfig) -> Provenance:
     base = [
         "git",
-        f"--git-dir={config.worktree / '.git-session'}",
+        f"--git-dir={_git_dir(config.worktree)}",
         f"--work-tree={config.worktree}",
     ]
     sha = subprocess.run(
@@ -213,7 +227,7 @@ def preflight(config: InventoryConfig, *, require_clean: bool) -> tuple[Provenan
         )
     provenance = git_provenance(config)
     if require_clean and config.require_clean_git_for_jobs and provenance.git_dirty:
-        raise RuntimeError("production inventory jobs require a clean .git-session worktree")
+        raise RuntimeError("production inventory jobs require a clean git worktree")
     return provenance, mount
 
 

@@ -1,0 +1,52 @@
+schema_version: 3
+run_id: annotations_v1
+
+# What this run is for
+# --------------------
+# Annotate every recording and every clip of Meta's Seamless Interaction release
+# so that downstream users can threshold, filter, stratify, sort, aggregate or
+# condition on any property themselves. Nothing is excluded here: a recording
+# that cannot be measured still gets a row saying why, and every clip of every
+# measured recording gets a row. The release is read-only and is never copied.
+
+source_root: ./seamless_interaction
+model_root: ./model_files
+# The M-1 census (ffprobe + stat of every filelist row), reused as-is.
+inventory: ./outputs/02_inventory/summary/inventory_joined.parquet
+# Meta's metadata tables: filelist, interactions, participants, relationships.
+metadata_root: ./datasets/seamless_interaction_metadata
+
+outputs:
+  # Group storage, not the 20 GB home quota: the tables and the scan shards are
+  # about 2-3 GB. The directory is created mode 0700 (participant-derived data).
+  root: /simurgh/group/lw29/seamless_annotations/annotations_v1
+
+clips:
+  # Clip k covers [k*L, (k+1)*L) seconds of its recording; the tail is kept.
+  # Changing this changes every clip id (the length is part of the id) and
+  # requires a rescan.
+  seconds: 30.0
+
+scan:
+  # One task processes whole interactions (both members), so pair measures
+  # (speech overlap, speaker bleed, copied annotations) are computed once.
+  tasks: 512
+  # Measurement parameters of the arm-motion tracks (gesture.GestureParams).
+  # Empty = the documented defaults.
+  gesture: {}
+
+video:
+  # The pixel pass (one keyframe per clip): sharpness, exposure, clutter,
+  # camera movement. Optional; its columns read visual_status='not_run' until it has run.
+  # Its shards correspond one-to-one to the scan's (same interactions per task).
+  short_side: 540
+
+# Posture thresholds (posture.PostureRules). Applied in `annotate`, not in the
+# scan, so re-tuning costs one annotate run. Empty = the documented defaults,
+# which come from the v0 hand labels (164 V03 files, 66 V00 files).
+posture: {}
+
+legacy:
+  # The previous (co-speech-gesture filtering) run, read once to carry its human
+  # review labels, with the spans they judged, into <root>/legacy/.
+  run_root: ./outputs/vibes_upper_body_v1

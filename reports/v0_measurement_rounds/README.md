@@ -1,3 +1,5 @@
+> **Historical (2026-09-24).** This report describes the previous iteration of this repository, which *filtered* the release to co-speech-gesture training clips. The pipeline now annotates every recording and clip and makes no inclusion decision (see `docs/pipeline.md`). The code described here is at the git tag `v1-cospeech-filter`. It is kept as the record of how the reused measures and the posture/audio thresholds were reached.
+
 # The v0 measurement rounds (2026-08-04 to 2026-08-09)
 
 Sixteen reports from fifteen rounds of measuring the corpus and building

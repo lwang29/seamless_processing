@@ -115,9 +115,10 @@ def make_bundle(
     ``shoulder_swing_deg`` sweeps both shoulder joints, which moves the wrists in
     the torso frame and is therefore *gesture*. ``global_drift_mm`` translates the
     whole body via the root, which must **not** register as gesture.
-    ``global_drift_mm`` writes ``smplh:translation``, which **nothing in the
-    pipeline reads** -- forward kinematics places the pelvis at the origin, so
-    pure translation is invisible by construction rather than by a threshold.
+    ``global_drift_mm`` writes ``smplh:translation``, which no motion measure
+    reads -- forward kinematics places the pelvis at the origin, so pure
+    translation is invisible to them by construction (only the reprojection
+    quality measure in framing.py uses it).
     ``global_yaw_deg`` is the parameter that actually exercises the torso frame:
     it rotates the whole body through ``smplh:global_orient`` while the arms
     stay rigid relative to the torso, which is what a participant turning to
@@ -125,8 +126,7 @@ def make_bundle(
 
     ``jitter_mm`` adds independent per-frame noise. ``single_adjustment`` replaces
     the sweep with one brief movement at the start. ``one_handed`` swings only the
-    left shoulder and parks the right arm in the lap, which is the posture the
-    rubric decided to accept on 2026-09-21.
+    left shoulder and parks the right arm in the lap.
 
     ``episodic`` gates the sweep to the speech segments with a raised-cosine
     envelope, so the bundle produces one gesture episode per utterance separated
@@ -222,27 +222,3 @@ def make_bundle(
         "boxes_and_keypoints:is_valid_box": np.ones(frames, dtype=bool),
     }
     return SyntheticBundle(payload=payload, vad=[{"start": a, "end": b} for a, b in speech])
-
-
-@pytest.fixture
-def gesturing_bundle() -> SyntheticBundle:
-    return make_bundle(shoulder_swing_deg=55.0)
-
-
-@pytest.fixture
-def static_bundle() -> SyntheticBundle:
-    return make_bundle(shoulder_swing_deg=0.0, jitter_mm=6.0)
-
-
-@pytest.fixture
-def cospeech_bundle() -> SyntheticBundle:
-    """The positive case: episodic two-handed gesturing locked to the speech."""
-
-    return make_bundle(shoulder_swing_deg=55.0, episodic=True)
-
-
-@pytest.fixture
-def one_handed_bundle() -> SyntheticBundle:
-    """Left arm gesturing, right arm resting in the lap."""
-
-    return make_bundle(shoulder_swing_deg=55.0, one_handed=True)

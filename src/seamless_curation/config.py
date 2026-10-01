@@ -1,9 +1,14 @@
-"""One YAML file describes a whole run, and its hash identifies the outputs.
+"""One YAML file describes a whole annotation run, and its hash identifies the outputs.
 
 Every stage takes ``--config``. Nothing takes a bare threshold on the command
-line, because a number typed at a shell prompt is not reproducible and the v0
-pipeline's fifteen near-identical per-round configs are what happens when the
-alternative is to copy a file.
+line, because a number typed at a shell prompt is not reproducible.
+
+The run is split by cost. ``scan`` and ``scan-video`` read the release (hours of
+cluster time) and store **continuous measurements only**; every threshold,
+label, flag and normalisation lives in ``annotate`` (minutes of pandas). So the
+``posture:`` block and the clip length's downstream meaning can be re-tuned
+without touching the release again — only ``clips.seconds`` and the ``scan``
+block change what the scan measures, and both are hashed into its fingerprint.
 """
 
 from __future__ import annotations
@@ -15,12 +20,10 @@ from typing import Any, Mapping
 
 import yaml
 
-from .gates import Gates
 from .gesture import GestureParams
-from .qualify import Qualifiers
-from .scan import ScanSettings
 
-DEFAULT_CONFIG = Path("configs/vibes_upper_body.yaml")
+DEFAULT_CONFIG = Path("configs/annotations_v1.yaml")
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -29,132 +32,111 @@ class RunConfig:
     source_root: Path
     model_root: Path
     inventory: Path
+    metadata_root: Path
     output_root: Path
-    private_root: Path
-    vendors: tuple[str, ...]
-    scan: ScanSettings
-    scan_tasks: int
-    gates: Gates
-    qualifiers: Qualifiers
-    max_clips_per_file: int
-    max_files_per_participant: int
-    select_seed: str
     clip_seconds: float
-    render_tasks: int
+    scan_tasks: int
+    gesture: GestureParams
+    video_short_side: int
+    posture_overrides: Mapping[str, Any]
+    legacy_run_root: Path | None
     raw: Mapping[str, Any] = field(repr=False, default_factory=dict)
 
     # ---- derived paths ----------------------------------------------------
     @property
-    def population_path(self) -> Path:
-        return self.output_root / "population.parquet"
+    def catalog_dir(self) -> Path:
+        return self.output_root / "catalog"
 
     @property
-    def shard_dir(self) -> Path:
+    def scan_dir(self) -> Path:
         return self.output_root / "scan_shards"
 
     @property
-    def windows_path(self) -> Path:
-        return self.output_root / "windows.parquet"
+    def video_dir(self) -> Path:
+        return self.output_root / "video_shards"
 
     @property
-    def files_path(self) -> Path:
-        return self.output_root / "scan_files.parquet"
+    def annotations_dir(self) -> Path:
+        """The published tables. Written as a whole, atomically."""
+        return self.output_root / "annotations"
 
     @property
-    def candidates_path(self) -> Path:
-        return self.output_root / "candidates.parquet"
+    def legacy_dir(self) -> Path:
+        """Labels carried over from the previous (filtering) iteration."""
+        return self.output_root / "legacy"
 
     @property
-    def qualified_path(self) -> Path:
-        """Every candidate clip with its tier-2 scores, flags and verdict."""
+    def qa_dir(self) -> Path:
+        return self.output_root / "qa"
 
-        return self.output_root / "qualified_clips.parquet"
+    def posture_rules(self):
+        from .posture import PostureRules
 
-    @property
-    def qualification_funnel_path(self) -> Path:
-        return self.output_root / "qualification_funnel.csv"
-
-    @property
-    def reviewed_clips_path(self) -> Path:
-        """The manually reviewed subset. A development artefact, not production."""
-
-        return self.output_root / "reviewed_clips.csv"
-
-    @property
-    def review_manifest_path(self) -> Path:
-        return self.output_root / "review_manifest.csv"
-
-    @property
-    def verdict_log(self) -> Path:
-        return self.output_root / "review_verdicts.jsonl"
-
-    @property
-    def media_root(self) -> Path:
-        return self.private_root / "clips"
-
-    @property
-    def accepted_clips_path(self) -> Path:
-        return self.output_root / "accepted_clips.csv"
-
-    @property
-    def accepted_segments_path(self) -> Path:
-        return self.output_root / "accepted_segments.csv"
+        return replace(PostureRules(), **dict(self.posture_overrides))
 
     def config_hash(self) -> str:
         return sha256(yaml.safe_dump(dict(self.raw), sort_keys=True).encode()).hexdigest()[:16]
+
+
+_TOP_LEVEL = {"schema_version", "run_id", "source_root", "model_root", "inventory",
+              "metadata_root", "outputs", "clips", "scan", "video", "posture", "legacy"}
 
 
 def load_config(path: str | Path = DEFAULT_CONFIG) -> RunConfig:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw, Mapping):
         raise ValueError(f"{path}: top level must be a mapping")
-    if int(raw.get("schema_version", 0)) != 2:
-        raise ValueError(f"{path}: expected schema_version 2")
+    if int(raw.get("schema_version", 0)) != SCHEMA_VERSION:
+        raise ValueError(f"{path}: expected schema_version {SCHEMA_VERSION}")
+    unknown = set(raw) - _TOP_LEVEL
+    if unknown:
+        raise ValueError(f"{path}: unknown top-level keys {sorted(unknown)}")
 
     outputs = dict(raw.get("outputs") or {})
+    clips_block = dict(raw.get("clips") or {})
     scan_block = dict(raw.get("scan") or {})
     gesture_block = dict(scan_block.pop("gesture", None) or {})
-    select_block = dict(raw.get("select") or {})
-    render_block = dict(raw.get("render") or {})
-    gate_block = dict(raw.get("gates") or {})
-    qualify_block = dict(raw.get("qualify") or {})
+    video_block = dict(raw.get("video") or {})
+    posture_block = dict(raw.get("posture") or {})
+    legacy_block = dict(raw.get("legacy") or {})
 
-    unknown = set(gate_block) - set(Gates().as_dict())
-    if unknown:
-        raise ValueError(f"{path}: unknown gate keys {sorted(unknown)}")
+    for name, block, allowed in (
+        ("outputs", outputs, {"root"}),
+        ("clips", clips_block, {"seconds"}),
+        ("scan", scan_block, {"tasks"}),
+        ("video", video_block, {"short_side"}),
+        ("legacy", legacy_block, {"run_root"}),
+    ):
+        unknown = set(block) - allowed
+        if unknown:
+            raise ValueError(f"{path}: unknown {name} keys {sorted(unknown)}")
     unknown = set(gesture_block) - set(GestureParams().__dataclass_fields__)
     if unknown:
         raise ValueError(f"{path}: unknown gesture keys {sorted(unknown)}")
+    if posture_block:
+        from .posture import PostureRules
 
-    unknown = set(qualify_block) - set(Qualifiers().as_dict())
-    if unknown:
-        raise ValueError(f"{path}: unknown qualify keys {sorted(unknown)}")
+        unknown = set(posture_block) - set(PostureRules().__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"{path}: unknown posture keys {sorted(unknown)}")
 
-    gates = replace(Gates(), **gate_block) if gate_block else Gates()
-    qualifiers = replace(Qualifiers(), **qualify_block) if qualify_block else Qualifiers()
-    gesture = replace(GestureParams(), **gesture_block) if gesture_block else GestureParams()
+    clip_seconds = float(clips_block.get("seconds", 30.0))
+    if not 1.0 <= clip_seconds <= 600.0:
+        raise ValueError(f"{path}: clips.seconds must be in [1, 600]")
+    legacy_root = legacy_block.get("run_root")
 
     return RunConfig(
         run_id=str(raw["run_id"]),
         source_root=Path(raw["source_root"]),
         model_root=Path(raw.get("model_root", "model_files")),
         inventory=Path(raw["inventory"]),
+        metadata_root=Path(raw["metadata_root"]),
         output_root=Path(outputs["root"]),
-        private_root=Path(outputs["private_root"]),
-        vendors=tuple(raw.get("vendors") or ("V00", "V01", "V02", "V03")),
-        scan=ScanSettings(
-            window_seconds=float(scan_block.get("window_seconds", 30.0)),
-            hop_seconds=float(scan_block.get("hop_seconds", 10.0)),
-            model_root=str(raw.get("model_root", "model_files")),
-            gesture=gesture,
-        ),
+        clip_seconds=clip_seconds,
         scan_tasks=int(scan_block.get("tasks", 512)),
-        gates=gates,
-        qualifiers=qualifiers,
-        max_clips_per_file=int(select_block.get("max_clips_per_file", 8)),
-        max_files_per_participant=int(select_block.get("max_files_per_participant", 12)),
-        select_seed=str(select_block.get("seed", "vibes")),
-        clip_seconds=float(render_block.get("clip_seconds", 30.0)),
-        render_tasks=int(render_block.get("tasks", 256)),
+        gesture=replace(GestureParams(), **gesture_block) if gesture_block else GestureParams(),
+        video_short_side=int(video_block.get("short_side", 540)),
+        posture_overrides=posture_block,
+        legacy_run_root=Path(legacy_root) if legacy_root else None,
         raw=raw,
     )

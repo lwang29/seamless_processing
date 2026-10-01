@@ -1,706 +1,472 @@
-# The production pipeline, step by step
+# The annotation pipeline, step by step
 
-This document describes the pipeline **as implemented**. Every threshold quoted
-here is the value in `configs/vibes_upper_body.yaml` or the dataclass default it
-falls back to, and every count is from the live run. Where a step has a known
-limitation or a failure mode it does not catch, that is stated in the step's own
-section rather than collected out of sight at the end.
+This document describes the pipeline **as implemented**: what each stage reads
+and writes, how every annotation is computed, what its thresholds rest on, what
+it cannot see, and where each value comes from. The column-by-column reference is
+[`annotation_schema.md`](annotation_schema.md), generated from the registry in
+`src/seamless_curation/schema.py`; the numbers a run produced (coverage,
+distributions, validation evidence) are in `annotations/annotation_report.md`.
 
-The pipeline is **fully automated**. Manual review is not a step in it. Review
-tooling still exists and is documented in [§9](#9-development-only-review-tooling),
-but it produces labels used to calibrate and validate the automated decision; the
-pipeline runs to completion, and produces its training manifest, with an empty
-verdict log. `test_the_production_manifest_needs_no_reviewer_at_all` asserts
-exactly that.
+**What changed.** Until 2026-09 this repository *filtered* the release down to
+30-second co-speech-gesture training clips (tier-1 gates, a tier-2 score, caps
+per file and participant). It now **annotates every recording and every clip**,
+so a downstream user can threshold, filter, stratify or condition on any
+property. No stage makes an inclusion decision: a recording that cannot be
+measured still gets a row saying why, and every clip of every measured recording
+gets a row. The previous pipeline is preserved at the git tag
+`v1-cospeech-filter`; how its measures and labels were carried over is in
+[§8](#8-what-was-reused-adapted-replaced-or-removed).
 
 ---
 
-## What the pipeline is deciding
+## 1. Units and keys
 
-One question, asked of every 30-second window of every participant recording:
+The task this pipeline was redesigned for called one participant's recording of
+one interaction a "clip". In this repository that unit is a **recording** (Meta's
+file), and a **clip** is a fixed-length segment of a recording — the previous
+pipeline already worked on 30-s segments, and segment-level annotation is what
+lets posture change within an interaction, clips be matched to a partner's, and
+a training window be selected.
 
-> While this person is speaking, are their hands and arms making natural,
-> visible co-speech gestures?
-
-Technical cleanliness is **not** sufficient. A recording with flawless SMPL-H
-tracking, clean audio and a participant whose hands rest in their lap for the
-whole conversation is a *reject*, and catching that case is the pipeline's main
-job. The five exclusions it is built around are:
-
-| # | excluded | caught by |
+| level | key | notes |
 |---|---|---|
-| 1 | hands essentially static while speaking | §5 `static_while_speaking`, §6 `static_while_speaking`, `hands_parked_low` |
-| 2 | too little visible upper-body movement to be gesturing | §5 `motion_too_small`, `one_posture_only`, `elbows_pinned`; §6 quality score |
-| 3 | apparent motion is tracking noise or SMPL-H jitter | §4 travel requirement; §5 `motion_is_detector_noise`, `channels_disagree`; §6 same two at working thresholds |
-| 4 | motion is global body movement, not arm articulation | §4 torso frame; §6 `motion_is_global` |
-| 5 | a single brief adjustment or isolated transient | §5 `gesture_not_sustained`, `too_few_episodes`; §6 `episodes_too_brief`, `gesture_not_sustained` |
+| participant | `V00_P0061` | bare ids collide across vendors (627 ids); V00 has 165 `A`-suffixed ids |
+| session | `V00_S0039` | session ids collide across vendors |
+| prompt | `00000581` | Meta's `prompt_hash` = the file id's I-segment ("interaction_id") |
+| interaction | `V00_S0039_I00000581` | the conversation; **the I-segment alone is a prompt id, reused by up to 1,550 sessions** |
+| recording | `V00_S0039_I00000581_P0061` | Meta's file id |
+| clip | `V00_S0039_I00000581_P0061_L30_C003` | clip 3 of the 30-s grid, [90, 120) s; the grid length is part of the id |
+| dyad window | `V00_S0039_I00000581_L30_W003` | the conversation over clip 3's interval |
 
----
+Every key is a string (zero padding and suffixes preserved) and each parent key
+is a prefix of its children's. `src/seamless_curation/ids.py` builds them all.
 
-## Order of operations
+**Whose body.** Every NPZ tracks one subject: the recording's own participant
+(one box and one keypoint set per frame; box-centre jumps ≤ 0.2 box heights on a
+52-file sample; the partner was never in view in sampled frames, including the
+V03 room-camera rasters). So every body, posture, framing, face and motion field
+describes the recording's participant, per clip; the partner's values are on the
+partner's own clip row (`partner_clip_id`), and `interactions.posture_pair` /
+`interaction_windows.window_posture_pair` summarise the dyad.
+
+## 2. Stages
 
 ```
-   seamless_interaction/            the release, read-only, never modified
-            |
-   [1] population    eligibility from the M-1 inventory        -> population.parquet
-            |
-   [2] scan          per-frame measurement, Slurm array         -> scan_shards/*.parquet
-            |
-   [3] gather        concatenate shards, refuse gaps            -> windows.parquet
-            |
-   [4]               (measurement definitions: §4)
-            |
-   [5] select        tier-1 gates + clip selection              -> candidates.parquet
-            |                                                      gate_funnel.csv
-   [6] qualify       tier-2 disqualifiers + quality score       -> qualified_clips.parquet
-            |                                                      qualification_funnel.csv
-   [7] manifest      write the accepted subset                  -> accepted_clips.csv
-            |                                                      reviewed_clips.csv (dev)
-   [8] export        resolve paths, write the dataset card      -> export/
-            |
-   [9] verify        read sampled rows back out of the release  -> pass/fail
+seamless_interaction/  (read-only)      datasets/seamless_interaction_metadata/  (Meta CSVs)
+        |                                           |
+        |          outputs/02_inventory (M-1 census: stat + ffprobe of every filelist row)
+        |                                           |
+        |                              [catalog]  every recording + participants, sessions,
+        |                                           |   prompts, interactions metadata   (seconds)
+        +------------------------------> [scan]    continuous measurements per interaction
+        |                                           |   Slurm array, 512 tasks            (hours)
+        +------------------------------> [scan-video] one keyframe per clip (optional)    (hours)
+                                                    |
+                                        [annotate]  labels, scores, links, aggregates,
+                                                    |   validate, publish atomically      (minutes)
+                                        [validate] [report] [schema-docs]
 ```
 
-Each stage reads only the outputs of the ones before it, so any stage can be
-re-run alone. Re-tuning a tier-2 threshold costs one `qualify` run over a
-parquet file — seconds, no media read. Changing a *measurement* changes the scan
-fingerprint and every shard recomputes.
-
----
-
-## 1. Population — eligibility
-
-**What it does.** Selects the participant files worth measuring at all, from the
-M-1 inventory of 129,370 files.
-
-**Why.** Measurement costs about a second per file. Excluding what cannot be used
-before spending that is the only cheap filter in the pipeline. It also removes
-conditions that would otherwise produce *misleading* measurements rather than
-merely useless ones.
-
-**Signals.** Container metadata and the released annotation JSON only. No pixels,
-no pose.
-
-**Rules.**
-
-| rule | threshold | why |
+| stage | reads | writes (under `outputs.root`) |
 |---|---|---|
-| all four modalities present | `.npz`, `.json`, `.mp4`, `.wav` | a partial bundle cannot be measured or trained on |
-| video stream present | — | some bundles carry audio only |
-| raster format | exclude `2160x2160`, `1920x1080`, `640x480`, `3840x2160` | these are the formats whose camera geometry the release's fit handles badly; the stretch ends up in the pose itself |
-| interaction type | exclude `charades` (reported as `no_speech_activity`) | a game with scripted physical actions, not conversation |
-| duration | `>= 40 s` | shorter than one 30-second window plus a hop |
-| probe status | `probe_status == "ok"` | the container could not be read reliably |
-| frame rate | `20 <= nominal_fps <= 61` | a rate outside this range makes the frame/second conversions wrong |
-| timebase drift | annotation grid vs `video_duration_s`, `<= 0.5 s` | a drifting timebase silently misaligns speech against pose |
-
-There is **no VAD-based rule at this stage** — the population is built from the
-inventory and the annotation's timebase only, and whether a participant actually
-speaks is decided per window by `speech_seconds` in §5. The exclusion label
-`no_speech_activity` is the `charades` rule above; it is named for the reason
-rather than the mechanism, which is worth knowing when reading the counts.
-
-**Outcome.** 118,570 of 129,370 files eligible. Exclusions, summing to 10,800:
-6,741 `excluded_raster`, 2,955 `no_speech_activity` (all of them `charades`),
-472 `too_short`, 439 `no_video_stream`, 189 `incomplete_bundle`, 4
-`timebase_drift`. `probe_failed` and `unusable_frame_rate` exclude nothing on
-this corpus — the first reason recorded per file is the one reported, and
-neither is ever first.
-
-**Relation to the goal.** Purely preparatory; it removes nothing on gesture
-grounds.
-
-**Limitations.** Raster exclusion is a proxy: it removes formats *known* to be
-problematic rather than detecting the distortion directly, so a good recording in
-a bad format is lost. The timebase check compares the annotation grid to the
-video duration — an earlier version compared the container to its own audio
-track, which made three of its four exclusions false positives.
-
----
-
-## 2-3. Scan and gather — measurement
-
-**What they do.** `scan` measures every eligible file frame by frame and reduces
-it to 30-second windows at a 10-second hop; `gather` concatenates the shards.
-
-**Why sharded.** 118,570 files as a 512-task Slurm array. `gather` refuses to
-proceed if any shard is missing, so a partial scan cannot silently become a
-smaller corpus.
-
-**Signals.** `smplh:body_pose`, `smplh:left_hand_pose`, `smplh:right_hand_pose`,
-`smplh:global_orient`, `smplh:is_valid`, `boxes_and_keypoints:keypoints` (the
-released COCO-WholeBody-133 2D), and `metadata:vad` from the annotation JSON.
-
-**Restartability.** A shard marker records a fingerprint that hashes the
-measurement parameters **and the source of `gesture.py` and
-`smplh_kinematics.py`**, plus the set of file ids the shard covered. So changing
-a measurement invalidates every shard automatically, and a `--limit` smoke test
-cannot make the real scan a no-op.
-
-**Parameters.** Window 30.0 s, hop 10.0 s. 30 s is long enough for a gesture
-pattern to show and short enough that a reviewer could watch one; the hop makes
-neighbouring windows overlap, so a gesture-dense stretch is found wherever it
-starts and selection vetoes the overlap later.
-
-**Pass/fail.** None. This stage makes no decisions — it only measures. A file
-that cannot be read at all is recorded as `gesture_status != "ok"` and fails
-tier 1's first clause rather than being silently dropped here.
-
-**Outcome.** 2,423,304 windows over 7,550 hours. Zero read errors.
-
-**Limitations.** The hop means a gesture shorter than 10 s can fall between two
-window centres and be diluted in both. Windows are also fixed-length, so a
-40-second continuous gesture sequence is represented as two overlapping
-30-second views rather than as one span; selection then keeps at most one of
-them.
-
----
-
-## 4. What is measured, and the two ideas that make it work
-
-### 4.1 The torso frame — exclusion #4
-
-All joint positions are expressed in a frame whose **origin is the shoulder
-midpoint**, whose x-axis runs along the shoulder line, whose y-axis is the
-component of pelvis-to-neck perpendicular to it, and whose z is their cross
-product. Forward kinematics is pure NumPy over the 52-joint SMPL-H tree,
-validated against `smplx` to under a micrometre.
-
-**Why.** A participant who sways, turns, leans or is followed by a moving camera
-produces large joint velocities in world coordinates while their arms do nothing.
-In the torso frame those motions are, by construction, near zero. This is not a
-threshold that can be tuned wrong — it is a change of coordinates, and it is the
-primary defence against exclusion #4.
-
-Two separate mechanisms, worth distinguishing:
-
-- **Translation is not read at all.** Forward kinematics places the pelvis at
-  the origin and `smplh:translation` is never consumed, so a moving camera or a
-  participant walking across the room is invisible rather than thresholded.
-- **Rotation and posture are removed by the frame.** A participant turning to
-  face their partner changes every world-frame joint position; in the torso
-  frame it changes almost nothing.
-
-`test_global_body_movement_is_not_gesture` asserts the second by driving a 50°
-whole-body yaw, showing the wrist genuinely travels over 100 mm in world
-coordinates, and showing the pipeline measures under 1 mm of wrist range from
-it. `test_pure_translation_is_invisible_by_construction` asserts the first.
-
-### 4.2 Speed **and** travel — exclusion #3
-
-A frame counts as *gesturing* only if the wrist has both:
-
-- **speed** `>= 60 mm/s` (smoothed over 5 frames, central difference half-width 2), **and**
-- **travel** `>= 35 mm` within a 0.5 s window.
-
-**Why both.** Speed alone is satisfied by vibration. 8 mm of per-frame jitter at
-30 fps is 240 mm/s — four times the speed floor, and fifteen times the 12–16 mm/s
-resting floor measured on the most static real files in the corpus. Requiring
-*displacement over half a second* means motion that does not go anywhere does not
-count, however fast it is. `test_realistic_jitter_in_place_is_not_gesture` and
-`test_tracking_jitter_is_not_mistaken_for_gesture` assert this.
-
-### 4.3 Episodes — exclusion #5
-
-Gesturing frames are merged into **episodes**: gaps shorter than 0.25 s are
-closed, then runs shorter than 0.30 s are dropped. An episode counts as
-co-speech if it overlaps *any* speech by at least 0.20 s. The 0.80 s minimum is
-separate — it defines what counts as an **utterance** for
-`speech_segments_covered`, so a very short vocalisation cannot be one of the
-utterances a gesture is required to cover.
-
-**Why.** It converts "how much motion" into "how many separate times, and for
-how long each" — which is the distinction between gesturing and adjusting your
-glasses once.
-
-### 4.4 Measures produced
-
-Per window, about 35 values. The ones the decisions read:
-
-| measure | meaning |
-|---|---|
-| `gesture_frac_speech` | share of speaking frames that are gesturing |
-| `gesture_seconds_speech` | absolute seconds of gesture during speech |
-| `gesture_speech_ratio` | `(speech_rate + 0.02) / (silence_rate + 0.02)`; the smoothing stops a participant who is simply never still while silent from producing an unbounded ratio |
-| `episode_count_speech`, `episode_median_s` | how many episodes, and how long each |
-| `speech_segments_covered` | share of utterances containing an episode |
-| `wrist_excursion_p90_mm`, `elbow_excursion_p90_mm` | p90 distance from the within-window median position |
-| `wrist_range_mm` | bounding-box diagonal of wrist travel |
-| `posture_spread_mm` | mean pairwise distance between wrist positions sampled 2.5 s apart, **max over the two hands** |
-| `wrist_height_p75_mm` | height of the **higher** wrist above the shoulder midpoint, p75 over speech frames |
-| `hands_together_frac` | share of speech frames with wrists within 180 mm |
-| `arm_abduction_p75_deg` | angle of the **more abducted** upper arm from the torso axis |
-| `arm_speed_speech_p50_mm_s`, `torso_travel_mm_s_p50` | median arm speed during speech; median torso translation speed |
-| `step_cosine_p50` | median cosine between successive 2D displacement steps |
-| `consistency_r` | correlation between SMPL-H arm speed and released-2D arm speed |
-| `smplh_valid_frac`, `smplh_longest_invalid_s`, `hand_frozen_frac`, `kp_conf_p10`, `implausible_frac` | tracking integrity |
-| `sync_r`, `sync_lag_s` | peak cross-correlation of the gesture-activity and speech envelopes, and its lag |
-
-**Every activity and posture measure is the maximum over the two hands** — the
-more mobile wrist, the higher wrist, the more abducted arm. That is why
-one-handed gesturing is accepted;
-`test_one_handed_gesture_scores_like_two_handed` fails if anyone changes a max
-to a mean.
-
-### 4.5 The one thing no measure may be
-
-**No gate is a jitter-*magnitude* gate.** 106 of 135 candidate quality signals
-measured on the dev corpus correlate with gesture activity at |rho| up to 0.903
-— including every acceleration and high-pass-residual variant, and the one
-designed specifically to suppress smooth motion. Gating on any of them is
-arithmetically a gate on how much the participant gestured, which would delete
-the most expressive people first.
-
-The two noise guards used instead are outside that family:
-
-- `consistency_r` compares **two independent measurements** of the same arm
-  (SMPL-H-derived speed vs released 2D keypoint speed). Both can be noisy; they
-  cannot be noisy in the same way by accident.
-- `step_cosine_p50` looks at the **direction** of successive displacements.
-  Detector noise jumps out and back (cosine near −1); real motion continues in a
-  direction (positive). It is scale-free.
-
-**Limitation.** `consistency_r` is only meaningful once there *is* motion — two
-near-static channels correlate at chance. It is therefore applied after the
-gesture clauses, never before.
-
----
-
-## 5. Tier-1 gates — eligibility of a window
-
-**What it does.** Eighteen clauses; a window must pass all of them to become a
-candidate. The **first** failing clause is recorded as `fail_reason`, so the
-histogram reads as a funnel.
-
-**Why it is deliberately permissive.** These gates run before selection, over
-2.4 M windows, and they cannot distinguish "modest gesturer" from "no gesturer"
-without also deleting the modest gesturer. Their job is to remove what is
-*unusable*, not to judge degree. Judging degree is §6.
-
-### Tracking integrity
-
-| clause | threshold | what it stops | fired |
-|---|---:|---|---:|
-| `smplh_valid_frac` | `>= 0.90` | mostly-untracked windows | 224,822 |
-| `smplh_longest_invalid_s` | `<= 1.0 s` | a continuous tracking break, as opposed to scattered occluded frames | 73,168 |
-| `hand_frozen_frac` | `<= 0.05` | hand-pose vectors bit-identical to the previous frame — the measured damage behind an invalid frame | 0 (36,087 violate) |
-| `kp_conf_p10` | `>= 0.30` | the detector did not find the person | 2 |
-| `implausible_frac` | `<= 0.002` | sustained wrist speed above 4 m/s | 195 |
-
-Validity is gated on the *window*, not the file. An earlier version required
-`smplh:is_valid` on every frame of the file and that single clause rejected
-62.6% of V00 — more than every other check combined — for exactly the case the
-brief rules out of scope: a hand briefly leaving the image.
-
-**Read that last column carefully.** It counts windows whose *first* failing
-clause is this one, which is what makes the table a funnel. It is not the number
-of windows that violate the clause. `hand_frozen_frac` is the clearest case:
-36,087 windows (1.5%) exceed 0.05, but every one of them already failed an
-earlier clause, so the funnel attributes none to it. The clause is doing work;
-it is just never the first thing wrong with a window. The same caveat applies to
-every row — `channels_disagree` shows 10 because `consistency_r` is applied
-last, not because only 10 windows disagree.
-
-### Co-speech gesture
-
-| clause | threshold | what it stops | fired |
-|---|---:|---|---:|
-| `speech_seconds` | `>= 8.0 s` | judging gesture where there is barely any speech | 801,414 |
-| `gesture_frac_speech` | `>= 0.35` | hands still while the person talks | 318,252 |
-| `speech_segments_covered` | `>= 0.40` | one brief adjustment scored as gesturing | 7,638 |
-| `episode_count_speech` | `>= 3` | a single continuous sweep, however large | 66,332 |
-| `wrist_excursion_p90_mm` | `>= 80 mm` | micro-motion and tracking wobble | 18,789 |
-| `elbow_excursion_p90_mm` | `>= 35 mm` | wrist flicks with a pinned elbow | 41,077 |
-| `gesture_speech_ratio` | `>= 1.05` | constant undirected fidgeting | 110,319 |
-| `posture_spread_mm` | `>= 150 mm` | the same posture over and over | 232,593 |
-| `wrist_height_p75_mm` | `>= -300 mm` | hands at the sides or parked at the waist | 40,341 |
-| `hands_together_frac` | `<= 0.55` | clasped hands | 14,389 |
-| `arm_abduction_p75_deg` | `>= 17 deg` | elbows pinned to the ribs | 38,344 |
-
-The four posture-variety clauses (`posture_spread_mm` onward) were added after a
-manual pass rejected 22 of 36 items for static hands that every *activity*
-clause had passed. Hands clasped at the waist shuffle fast enough to satisfy any
-speed rule while never leaving one place. Activity and variety are both
-necessary and neither implies the other.
-
-### Noise, applied last
-
-| clause | threshold | fired |
-|---|---:|---:|
-| `consistency_r` | `>= 0.45` | 10 |
-| `step_cosine_p50` | `>= -0.30` | 21,115 |
-
-Both are applied **last**, because both are uninterpretable before the gesture
-clauses have established that there is motion to measure: two near-static
-channels correlate at chance, and a wrist that never moves produces no steps to
-take a direction from. That ordering is why their funnel counts are small — not
-because the clauses are inert. Over all 2.42 M windows, 940,302 violate
-`step_cosine_p50 >= -0.30`; they simply fail something earlier first.
-
-What *is* true is that these thresholds leave headroom. Among the windows that
-survive to become candidates, `step_cosine_p50` has a 10th percentile of +0.06
-and a median of +0.60 — the −0.30 floor is far below the surviving
-distribution, so a much higher cut is available to a stage that runs after
-selection. §6 uses it.
-
-**Limitations.**
-
-- These thresholds are **not calibrated against labels.** They were set from
-  the corpus distribution and from the failure modes the v0 pipeline produced.
-  The labelled data available was all drawn from files that had *already passed*
-  these gates, so it can say nothing about what they wrongly reject. This is the
-  single largest unvalidated surface in the pipeline.
-- `hand_frozen_frac` fires zero times and is effectively inert here.
-- `consistency_r` and `step_cosine_p50` are near-inert at tier-1 values; their
-  working thresholds are in §6, and the reason they are loose here is that both
-  are uninterpretable until the gesture clauses have established there is motion
-  to measure.
-
-**Outcome.** 414,504 of 2,423,304 windows qualify (17.1%).
-
-### Selection
-
-Qualifying windows are reduced to non-overlapping clips: greedy by `clip_score`,
-overlapping windows vetoed, at most 8 clips per file and at most 12 files per
-participant. The caps exist because one V00 participant appears in 221 files and
-an unbalanced training set is a worse training set even when every clip is good.
-
-**Outcome.** 73,883 candidate clips / 615.6 hours over 31,815 files and 3,724
-participants.
-
----
-
-## 6. Tier-2 qualification — the production decision
-
-**What it does.** Decides, for each candidate clip, whether it is co-speech
-gesture data. This is the step that replaced manual review.
-
-**Signals.** Only the per-window measures already in `candidates.parquet` —
-no media is read and no new measurement is computed, except `articulation_ratio`
-which is derived from two existing columns. That is why re-tuning a tier-2
-threshold costs seconds.
-
-**Why it exists separately from §5.** §5 is a filter over 2.4 M windows that
-must not be strict about degree. What a reviewer added on top was a judgement of
-degree — these hands are up and working, those are technically moving but parked
-in a lap. Measured on 100 human-labelled files that had **all already passed
-every tier-1 gate**, that judgement turns out to be predictable from measurements
-the scan already produces:
-
-| measure | AUC (accept vs reject) | accept median | reject median |
-|---|---:|---:|---:|
-| `wrist_height_p75_mm` | 0.85 | −87 mm | −194 mm |
-| `step_cosine_p50` | 0.81 | 0.66 | 0.39 |
-| `arm_speed_p50_mm_s` | 0.75 | — | — |
-| `wrist_range_mm` | 0.75 | 747 mm | 675 mm |
-| `arm_abduction_p75_deg` | 0.74 | 31.6° | 26.4° |
-
-So tier 2 is not new physics. It is the same measurements read at thresholds the
-gates could not use.
-
-### 6.1 Structure: disqualifiers, then a score
-
-The decision is **not** a conjunction of tight thresholds. ANDing many strict
-clauses multiplies the false-negative rate, and discarding genuine-but-subtle
-gesturers is a failure mode in its own right. Instead:
-
-**Disqualifiers** — each names a *pathology*, not a degree. Failing any one is
-fatal and nothing compensates, because these are not "less gesture", they are
-"not gesture".
-
-| clause | threshold | exclusion | what it means |
-|---|---:|:---:|---|
-| `speech_seconds` | `>= 8.0 s` | — | not enough speech to judge |
-| `gesture_frac_speech` | `>= 0.50` | #1 | hands static while speaking |
-| `wrist_height_p75_mm` | `>= -260 mm` | #1 | hands parked in the lap or at the sides |
-| `episode_count_speech` | `>= 3` | #5 | a single movement |
-| `episode_median_s` | `>= 0.55 s` | #5 | a string of twitches rather than gestures |
-| `speech_segments_covered` | `>= 0.60` | #5 | gesture not sustained across utterances |
-| `articulation_ratio` | `>= 2.0` | #4 | motion mostly whole-body, not arms |
-| `step_cosine_p50` | `>= 0.25` | #3 | tracker noise — direction, not magnitude |
-| `consistency_r` | `>= 0.70` | #3 | the two channels disagree |
-
-`articulation_ratio` is `arm_speed_speech_p50_mm_s / max(torso_travel_mm_s_p50, 1)`,
-derived from columns the scan already writes. The denominator is floored at
-1 mm/s so a genuinely still torso yields a large ratio and passes, rather than
-dividing by zero.
-
-**Composite quality score** — four dimensions, each the mean of piecewise-linear
-ramps in physical units, combined by weight:
-
-| dimension | weight | ramps (0 at → 1 at) |
-|---|---:|---|
-| posture | 0.40 | `wrist_height_p75_mm` (−300 → −40 mm); `wrist_range_mm` (540 → 860 mm); `arm_abduction_p75_deg` (18 → 45°); `posture_spread_mm` (175 → 315 mm) |
-| persistence | 0.30 | `gesture_frac_speech` (0.45 → 0.92); `episode_median_s` (0.55 → 3.0 s) |
-| vigour | 0.10 | `arm_speed_speech_p50_mm_s` (95 → 310 mm/s) |
-| integrity | 0.20 | `step_cosine_p50` (0.10 → 0.80) |
-
-A clip must reach **`gesture_quality >= 0.34`**.
-
-Ramp endpoints are near the candidate pool's 10th and 90th percentiles, so 0.5
-means "typical of the pool" rather than "half of some arbitrary maximum". They
-are **not** fitted per-measure; only the final threshold is calibrated, which is
-what keeps 224 labels from being over-fitted by 8 free parameters.
-
-**Where 0.34 comes from.** Not an optimum — the labelled sets cannot resolve
-one, and two differently-sampled sets give two different F1 optima (0.32 and
-0.00). It is the **left edge of a plateau**: on the representative labelled
-sample, precision (0.936), recall (0.948) and specificity (0.615) are identical
-for every threshold from 0.34 to 0.40, so 0.34 is the smallest value delivering
-the full measurable quality gain, and therefore the one that keeps the most data
-(420.9 h against 396.3 h at 0.40) and the highest recall. The rule is stated in
-[`../reports/18_automated_qualification.md`](../reports/18_automated_qualification.md)
-§4.3, and the full trade-off curve is §4.1 there.
-
-### 6.2 Why this shape protects against false negatives
-
-Because the score is a weighted mean and not a conjunction, a restrained speaker
-who keeps their hands up, works them through every utterance and whose motion is
-cleanly coherent clears the bar without ever producing a large movement.
-`test_subtle_but_genuine_gesture_is_not_discarded` builds exactly that case — a
-swing less than half the clear case — and asserts it is accepted, that its
-posture dimension is genuinely below 0.75, and that persistence and integrity
-carry it.
-
-`vigour` is weighted lowest (0.10) for the same reason: speed is the dimension
-most confounded with personality.
-
-### 6.2b Why the disqualifiers cannot be folded into the score
-
-It is tempting to simplify: drop the nine disqualifiers and let the score carry
-everything. One constructed case shows why that fails. The
-single-brief-adjustment fixture — one 0.8 s movement in 30 seconds — scores
-`gesture_quality = 0.419`, **above the 0.34 accept threshold**. A single
-emphatic movement looks good on posture and vigour, and a weighted mean has no
-way to see that all of it happened at once.
-
-What rejects that clip is `too_few_episodes`, `gesture_not_sustained` and
-`static_while_speaking`. The disqualifiers exist precisely because some failures
-are structural rather than a matter of degree, and a mean cannot represent
-structure. `test_a_single_brief_adjustment_is_not_gesturing` asserts both halves
-of this — that the clip is rejected, *and* that the score alone would have
-accepted it — so the simplification fails a test rather than quietly readmitting
-the failure mode.
-
-### 6.3 One measure deliberately excluded
-
-`wrist_excursion_p90_mm` separates the labelled set **backwards**: rejects
-median 339 mm against accepts 319 mm. Peak excursion rewards exactly the failure
-the brief names — one big isolated adjustment. The clearest single case in the
-corpus is `V02_S5281_I00000280_P5272`: 91% gesture-in-speech, 328 mm posture
-spread, top-decile on every activity measure, and ten of twelve sampled moments
-show his arms hanging at his sides. The entire score comes from twice adjusting
-his beanie.
-
-Peak amplitude is therefore **not** treated as evidence of gesturing.
-`test_peak_excursion_is_excluded_from_the_score` asserts it stays out.
-
-### 6.4 What a clip carries out of this step
-
-Every clip — kept or dropped — carries `gesture_quality`, the four `dim_*`
-scores, `articulation_ratio`, an `exclusion_flags` string listing **every** clause it
-failed, and `fail_stage` naming the first. Flags are not short-circuited:
-diagnosing a threshold needs the whole picture, and the funnel view needs the
-first. So a downstream reader can re-threshold without re-running anything:
-
-```python
-stricter = manifest[manifest.gesture_quality > 0.6]
-```
-
-### 6.5 Outcome and measured accuracy
-
-50,516 of 73,883 candidate clips qualify (68.4%) — **420.9 hours** over 24,114
-files and 3,501 participants.
-
-**Measured against 90 held-out human labels** — files reviewed by hand with
-audio, all of which had already passed tier 1, so this is tier 2's own accuracy:
-
-| | accept every tier-1 candidate | + disqualifiers only | + quality score (**shipped**) |
-|---|---:|---:|---:|
-| precision | 0.856 | 0.904 | **0.936** |
-| recall | 1.000 | 0.974 | **0.948** |
-| specificity | 0.000 | 0.385 | **0.615** |
-| accuracy | 0.856 | 0.889 | **0.900** |
-
-Both tier-2 layers carry roughly equal weight: the disqualifiers take precision
-from 0.856 to 0.904 and specificity from 0 to 0.385, and the score takes them
-the rest of the way to 0.936 and 0.615. Neither alone would do.
-
-Bootstrap 95% intervals: precision [0.875, 0.987], recall [0.895, 0.988]. On a
-second, deliberately boundary-enriched label set (134 items, sampled evenly
-across all 64 strata cells) the same configuration gives precision 0.854 and
-recall 0.800 — the score is weaker on hard cases, and the gold figures should
-not be read as accuracy on difficult material.
-
-First-failing-clause funnel:
-
-| clause | clips |
-|---|---:|
-| `too_little_speech` | 0 |
-| `static_while_speaking` | 4,958 |
-| `hands_parked_low` | 4,516 |
-| `too_few_episodes` | 0 |
-| `episodes_too_brief` | 256 |
-| `gesture_not_sustained` | 437 |
-| `motion_is_global` | 684 |
-| `motion_is_detector_noise` | 9,254 |
-| `channels_disagree` | 146 |
-| `below_quality_threshold` | 3,116 |
-| **qualified** | **50,516** |
-
-`too_little_speech` and `too_few_episodes` count zero because tier 1 already
-enforces them at the same or a stricter value. They are kept as explicit
-restatements of the criteria — the clause list is meant to be readable as the
-full set of conditions — but they are not doing work.
-
-**Limitations.**
-
-- Thresholds are **calibrated against a labelled sample, not derived from first
-  principles.** They are meant to be moved with evidence.
-- The labelled set is biased toward what tier 1 passes, because that is all that
-  was ever shown to a reviewer. Tier 2's accuracy is therefore only
-  characterised *within* the tier-1-passing population — which is the only
-  population it is ever applied to, but it means the two tiers cannot be
-  re-balanced against each other without new labels.
-- `sync_r` is measured and reported but **gates nothing**: no labelled
-  comparison exists to calibrate it against. Its distribution is sensible
-  (p50 0.33), which is not evidence.
-- `posture_spread_mm` uses the **mean** pairwise distance, not the median. The
-  beanie case in §6.3 is the failure mode: ten samples in one posture and two in
-  another give a high mean even though ten of twelve moments are identical. The
-  median would score it near zero and is the obvious next measure; it needs a
-  re-scan.
-
----
-
-## 7. Manifest
-
-**What it does.** Writes `accepted_clips.csv` — one row per qualifying clip, a
-contiguous `[start_frame, end_frame)` range of one participant file, carrying
-identity, frame range, every measure a gate or qualifier reads, and every
-tier-2 score. It is a curated subset of the ~35 measured columns, not all of
-them; `qualified_clips.parquet` holds the complete set for every candidate,
-kept or dropped.
-
-**Why it is a manifest and not a copy.** The release is read-only and 40 TB. A
-frame-range list costs kilobytes, never diverges from the source, and can be
-re-filtered without re-exporting.
-
-**Pass/fail.** A clip appears iff `qualified` is true. No other condition, and
-in particular no verdict: moving `review_verdicts.jsonl` aside and re-running
-produces a byte-identical file.
-
-Also written, when a verdict log exists: `reviewed_clips.csv` and
-`accepted_clips_with_audio.csv` (§9), and an **agreement report** comparing the
-automated decision against every verdict it can join to. That comparison is a
-measurement in the summary, not an assumption, so a regression in tier 2 appears
-as a number.
-
-**Outcome.** `accepted_clips.csv`: 50,516 clips / 420.9 hours / 24,114 files /
-3,501 participants. `reviewed_clips.csv`: 1,030 clips / 8.6 hours.
-
-**Limitations.** The manifest is only as good as the source tree it points into;
-it carries no checksum of the NPZ files, so a corrupted or re-released source
-would not be detected here. That is what §8's `verify` is for, and it samples
-rather than checking every row.
-
----
-
-## 8. Export and verify
-
-**What they do.** `export` resolves the four source paths per row (`.npz`,
-`.wav`, `.mp4`, `.json`, all relative to `source_root`), writes both tiers as
-CSV, and generates `export/DATASET.md` — a card readable by someone who will
-never run the pipeline. `verify` samples manifest rows and reads them back out
-of the release.
-
-**Why.** A manifest is a promise about a tree it does not own. `export` makes
-the promise usable without knowing the release layout;
-`seamless_curation.dataset.load_clip` turns a row into pose, hands, audio and
-clip-relative VAD, reading only the frames the row names. `verify` is what
-stops the promise from silently going stale.
-
-**Signals.** `export` reads the manifests and `manifest_summary.json` (for the
-agreement figures printed in the card). `verify` reads the **source tree** and
-nothing else.
-
-**Criteria.** `verify` checks, per sampled row: the NPZ slice is exactly the
-promised number of frames; the upper-body block is `(n, 13, 3)`; and speech
-seconds recomputed from the released VAD match the manifest to within 0.5 s.
-
-**Pass/fail.** Any row failing any check is reported in `failures`; the command
-reports the list rather than raising, so one bad row does not hide the rest.
-
-**Outcome.** At the current manifest, `verify --sample 80` checks 80 rows and
-reports zero failures across 45,641,520 upper-body pose frames.
-
-**Limitations.** `verify` samples. It establishes that the manifest and the
-source agree where checked, not everywhere. It also cannot detect a source file
-that was replaced with a *different but equally well-formed* recording — there
-is no content hash of the release.
-
----
-
-## 9. Development-only review tooling
-
-`render`, `review`, `queue` and `import-verdicts` are **not production stages**.
-They exist to produce labelled data:
-
-- `render` draws a review card per file — twelve sampled moments with keypoints
-  overlaid, the pelvis-frame SMPL-H pose at each, and a timeline of own speech,
-  partner speech, arm speed, gesture episodes and accepted spans.
-- `review` serves those cards on `127.0.0.1` with the 30-second clip and audio.
-- Verdicts append to a JSONL log, keyed by a content-derived `review_item_id`.
-
-Their output is used for three things, all of them development: calibrating
-tier-2 thresholds, validating the automated decision, and the
-`reviewed_clips.csv` subset. That subset is 17% human by row; the rest is
-model review, so it is a labelled set rather than a human-signed one.
-
-**They are never required.** The production manifest is written whether or not
-the verdict log exists, and no verdict can add a clip to it or remove one — a
-property with its own tests (`test_a_verdict_cannot_change_the_production_manifest`).
-
-The review rubric is [`review_rubric.md`](review_rubric.md); it is the text the
-tier-2 clauses were derived from, kept so the translation from qualitative
-criterion to measured clause can be audited.
-
----
-
-## 10. Testing
-
-`tests/test_automated_qualification.py` is the acceptance suite: each of the
-five exclusions is built as a synthetic bundle whose motion is exactly that
-failure, run through real measurement and both gate tiers, and asserted to be
-rejected — **with the right reason**. The positive cases are asserted in the
-same file, because a filter that rejects everything satisfies every exclusion
-test ever written.
-
-| test | case | expected |
+| `catalog` | census, Meta CSVs | `catalog/{recordings,participants,sessions,prompts,interactions}.parquet` |
+| `scan` | catalog, NPZ + JSON + WAV of both members | `scan_shards/task_NNNN.{recordings,clips,bins,moi,windows,pairs}.parquet` + marker |
+| `scan-video` | scan shards, MP4 + NPZ box | `video_shards/task_NNNN.video.parquet` + marker |
+| `annotate` | catalog, all shards | `annotations/*.parquet` + side files |
+| `validate` | published tables | `validation_rerun.json` (`--read-back N` re-reads clips from the release) |
+| `report` | published tables, legacy labels | `annotations/annotation_report.md` |
+| `schema-docs` | registry | `docs/annotation_schema.md` |
+
+**The scan stores continuous values only.** Every threshold, band, label and
+normalisation is applied in `annotate`, which reads no media, so re-tuning a
+posture band (the config's `posture:` block) costs one annotate run. The scan's
+unit of work is the interaction: both members are measured in one task (partners
+sit in different release archives for 98.6% of pairs), so pair measures —
+speech overlap per window, partner bleed into each microphone, transcript echo,
+annotations copied between members — are computed once from both recordings.
+Shards carry a fingerprint (every measurement module's source, the parameters,
+the SMPL-H model file) and a membership hash (the files *and* the per-file
+inputs: fps, raster, anamorphic class, path); `annotate` refuses a missing,
+stale or re-membered shard.
+
+**Publication is atomic.** `annotate` casts every table to the registry's Arrow
+schema, runs the validator, and refuses to publish on any error; it writes the
+eight tables into a staging directory and swaps it in with one rename. Each
+parquet carries the run hash, and `dataset.load_tables` refuses to mix runs.
+
+**Cost** (full corpus): catalog seconds; scan ~4 s of CPU per recording but
+I/O-bound — the WAVs are 5.6 TB and the NPZs 1.9 TB — about 3-4 h wall at ~100
+concurrent tasks; scan-video ~0.03-0.14 s per clip; annotate a few minutes.
+
+## 3. The clip grid
+
+Clip *k* covers `[k*L, (k+1)*L)` seconds of its recording (`L = clips.seconds`,
+30), mapped to frames with the recording's own rate: `start = round(k*L*fps)`.
+The final clip is kept however short (`is_partial`), so every frame of every
+measured recording belongs to exactly one clip (validated); the previous sliding
+windows dropped each file's tail (157 h). Clips live on the released pose grid
+(the NPZ frame count), because every per-frame annotation does. Because the grid
+is in time, clip *k* of one member and clip *k* of the other cover the same
+interval even when their frame rates differ (1,120 measured pairs mix frame rates).
+Recordings with no pose array (476 zero-frame NPZs — the 439 behind missing
+videos and 37 V01 2160x2160 files — and 189 missing bundles) have no clips.
+
+## 4. How each annotation is computed
+
+### 4.1 Arm, hand and head motion
+
+The arm measures are the previous pipeline's, recomputed on the new grid for
+every clip (`prior:reused`): on the 496,789 full-length 30-fps clips whose frames
+coincide with an old window, all 22 reused columns reproduce the old values
+exactly (float32 rounding only; report §3.3). Two ideas carry them:
+
+* **The torso frame.** Wrist and elbow positions are expressed in a frame whose
+  origin is the shoulder midpoint and whose axes follow the shoulder line and the
+  spine (forward kinematics in NumPy over the 52-joint SMPL-H tree with the
+  neutral model and zero betas, agreeing with `smplx` to under a micrometre).
+  Swaying, leaning and turning move the frame, not the wrists in it, so
+  whole-body motion is removed by a change of coordinates rather than a
+  threshold. Root translation and orientation are not used by any motion measure.
+* **Speed and travel.** A frame is *active* when the faster wrist exceeds
+  60 mm/s **and** has travelled more than 35 mm within 0.5 s; gaps ≤ 0.25 s are
+  bridged and runs < 0.3 s dropped (lengths in frames use one ceiling rule, so
+  the definition no longer differs between 30 and 29.97 fps). Vibration in place
+  has speed but no travel. `arm_active_frac` and the episode counts are
+  descriptive definitions, not gates.
+
+All millimetre values are on one canonical skeleton (betas = 0), so they compare
+across participants by construction and do not measure body size.
+`hand_artic_p75_rad_s` uses local finger rotations over frames whose hand pose is
+not frozen (the release freezes hands when SMPL-H is marked invalid).
+`head_speed_*` is the angular speed of the SMPL-H head relative to the upper
+spine (agrees with Meta's `movement:alignment_head_rotation` at Spearman
+0.86-0.88 on V00). Two noise diagnostics are kept as tracking-quality columns,
+not as gates: `consistency_r` (SMPL-H vs 2D-keypoint wrist speed — two
+independent channels) and `step_cosine_p50` (detector noise reverses direction,
+motion continues). Every jitter-*magnitude* signal the previous work tried
+correlated with activity at up to |rho| 0.9, which is why none is published as a
+quality score.
+
+### 4.2 Posture (sitting vs standing)
+
+A protocol-driven variable: moderators encourage standing but allow sitting, so
+posture varies by participant, by interaction and within an interaction.
+**Observed values**: standing, sitting, and changes between them within a
+recording (e.g. `V03_S1821_I00000010_P3624` stands, sits, perches, sits). No
+lying, kneeling or crouching was seen in any sampled frame, so those are not
+categories. The enum is `standing | sitting | mixed | unclear | unknown`.
+
+**Per frame** (pelvis-frame FK joints): `hip_flexion` = the torso-thigh angle
+(≈ 180° straight, ≈ 90° seated) and `knee_between` = how far down the hip→ankle
+drop the knee sits along the torso axis (≈ 0.5 standing, 0.15-0.4 seated). Each
+is only read on frames where its landmarks are *visible* in the released 2D
+keypoints (confidence ≥ 0.5 **and** inside the raster — keypoints are
+extrapolated beyond the picture, so confidence alone is not visibility): hips and
+knees for the angle, knees and ankles for the ratio. Otherwise the fitted legs
+are the prior's guess and the value is NA.
+
+**Per 1-s bin** (median of observable frames, ≥ 50% observable), a rule chosen by
+vendor because the rigs differ (standing V00 reads ~25° less hip angle than
+standing V03):
+
+| rule | vendors | sitting | standing | between | evidence |
+|---|---|---|---|---|---|
+| `v03_hip` | V03 (all rasters; angles are rotation-invariant) | hip < 136° | hip > 152° | unclear | 164 V03 file labels: no stander below 136.1°, no sitter above 151.9° |
+| `v00_knee` | V00 | knee_between < 0.30 | ≥ 0.48 | unclear | 66 V00 file labels (selection-biased); hip angle unused on V00 |
+| `unvalidated_hip_knee` | V01 square-pixel, V02 | never (unclear) | hip ≥ 135° and knee ≥ 0.48 (hip only when ankles are out of frame) | unclear | no labels; visual QA: all 24 sampled V02 clips its sitting branch had produced were standing people |
+| `not_measurable_anamorphic` | V01 2160x2160, 1920x1080 | — | — | unknown | the released SMPL-H absorbed the stretch (the old detector read 93% "seated") |
+
+The thresholds are the retired v0 seated-posture detector's (FM1), turned from a
+single rejection cut into two edges with an **unclear band** between them.
+
+**Aggregation** (per clip over its bins; per recording over all of its bins, not
+from clip labels): `unknown` if fewer than half the bins (or < 3) are observed;
+`unclear` if fewer than half of the observed bins are decided; `mixed` if a
+sustained run (≥ 5 decided bins) of each posture occurs — the same criterion
+counts `posture_transitions`; otherwise the majority posture when it has ≥ 80% of
+decided bins, else `unclear`. `posture_confidence` is the share of bins that
+support the label (NA for unclear/unknown) — evidence support, **not** P(correct).
+The four `posture_*_frac` shares sum to 1 and are published so users can apply
+their own cut.
+
+**Validation.** On the 66 hand-labelled V00 files
+(`configs/validation/v00_posture_labels.csv`), recording-level labels were
+decided on 43 and right on 41; the 23 others fell in the unclear band, where the
+two labelled groups overlap (0.39-0.41). No stander was labelled sitting. The
+known miss is a sitter on a high stool with dangling legs (reads standing).
+Bin- and clip-level accuracy was never labelled by the dataset's annotators
+(`posture_rule_evidence`), so a **visual QA** of clip labels was run
+(`configs/validation/posture_visual_qa_2026-09-24.csv`; one mid-clip keyframe per
+clip, 12 random full-length clips per label × vendor): "standing" was right on 48 of
+48 clips (12 per vendor), "sitting" on 12/12 V00, 11/12 V03 (one standing or perched)
+and 1/1 V01. On V02 the unvalidated rule's "sitting" was wrong every time: 12 clips
+decided by the hip angle alone (fits cropped at the knees read 112-120°) and a second
+sample of 12 decided by hip and knee together were all standing people, so that rule
+no longer decides "sitting" at all (V01 and V02 read only standing or unclear). V00
+"unclear" clips were mostly standing (11 of 12): the band is deliberately conservative.
+**Limitations**: perching on a high stool with legs extended reads as standing
+("standing" = upright with legs extended); a sustained forward bend (≥ 5 s) lowers
+the torso-thigh angle and can read as sitting under the V03 rule, so some "mixed"
+clips are bends rather than sits.
+
+### 4.3 Expressivity
+
+One overall score plus subdimensions, built on the arm/hand/head measures and
+checked against Meta's own signals.
+
+* **Channels** (each a percentile within the clip's reference group):
+  `expr_energy` (median wrist speed), `expr_amplitude` (wrist range and p90
+  excursion), `expr_head` (head speed p75), `expr_hands` (finger articulation
+  p75). Extra subdimensions, not in the score: `expr_variability` (coefficient of
+  variation of 1-s wrist speed: bursty vs steady; scale-free), `expr_face`
+  (facial-action-unit variability, V00 only), `expr_vocal` (p90-p10 level of own
+  speech; clips with ≥ 3 s of own speech, any role). Face and voice stay out of the overall score
+  because their coverage is partial — a score whose meaning changes by vendor is
+  not "applied consistently".
+* **Why these four.** The previous design's six channels double-counted: active
+  fraction is a threshold on the same wrist speed (Spearman 0.9), and SD-of-speed
+  tracks amplitude (0.88). The four kept are distinct signals (correlations are
+  in the report).
+* **Score.** `expressivity_score` = the mean of the four channel percentiles,
+  re-ranked so it is uniform over the reference clips: 0.7 means more expressive
+  than 70% of full-length measured clips of the same **reference group** (V00,
+  V01, V02, V03 portrait, V03 room camera). Within-rig ranking is the default
+  because rig and fit effects are real: V02 fits read 29-43% faster at matched
+  speaking time. `expressivity_score_pooled` ranks against every vendor.
+  `expressivity_level` / `_pooled`: low < 1/3 ≤ medium < 2/3 ≤ high.
+* **Status and confidence.** `measured`, `too_short` (< 2 s), `pose_distorted`
+  (severe anamorphic: the arm pose is wrong too), `no_subject`, `incomplete`.
+  `expressivity_confidence` = min(1, clip length / L) × share of frames with both
+  wrists in frame — evidence coverage, not P(correct).
+* **Reference.** Quantile tables (1,001 points, mid-rank ties) per group are
+  written to `expressivity_reference.json`, so scores are reproducible and new
+  clips can be placed on the same scale.
+* **Validation** (report §3.2, full run). Speaking clips score far higher than
+  listening clips (median 0.69-0.71 vs 0.23-0.27 in every vendor). On V00 the score
+  correlates with facial-action variability (Spearman 0.38; 0.31 controlling for
+  speaking time) — two independent channels agreeing. The previous iteration's 90
+  human gesture verdicts separate at AUC 0.58 (a weak proxy: they judged "good
+  co-speech training data"). **Not supported**: clips containing an
+  observer-annotated moment of interest are not more expressive than other clips of
+  the same recordings (AUC 0.49 on V00, 0.55 on V03) — Meta's MOIs mark deviations in
+  internal state that are mostly not body motion, so MOI presence is published as
+  its own column and is not a subdimension. Seated clips score lower than standing
+  ones on V00/V02 (medians 0.30/0.42 vs 0.51/0.52): condition on posture when that
+  matters.
+
+### 4.4 Speech, turn-taking and the partner
+
+* **Own speech.** Meta's VAD; when a recording's VAD is empty but its transcript
+  has timed words (673 of 1,760 zero-VAD files probed), the mask is built from the
+  word spans (gaps ≤ 0.5 s bridged) and `speech_source = transcript_only`; when the
+  VAD stops early (≥ 20 timed words start > 5 s after its last interval; ~1.8% of
+  V03) the words' spans are added after it (`vad+transcript_tail`); with neither
+  VAD nor words, `none` — silence and a missing annotation are then
+  indistinguishable, so every speech-conditioned value is NA. Speech is annotated
+  only as far as the WAV it was derived from (`speech_annotated_until_s`; 57
+  measured recordings have a WAV > 1 s shorter than the pose grid). Meta's VAD also
+  drops out mid-recording and resumes (1,220 recordings; e.g. 43 minutes of ~0 VAD
+  under 40-200 transcript words/min at the speaker's own level). Every clip carries
+  `speech_annotation_status` (`annotated`, `no_speech_annotation`, `beyond_audio`,
+  `vad_gap` = ≥ 10 timed words at > 8 words per second of VAD speech); unless it is
+  `annotated`, own speech and every speech-conditioned value is NA and
+  `speaking_role` is `unknown` — never a false silence. (Filling such gaps from the
+  transcript belongs in the scan's speech mask; it is an annotate-time guard until
+  the next rescan.)
+* **Speaking role** (per clip, own share *s*, partner share *p* from the linked
+  partner clip): speaking if s ≥ 0.1 and s ≥ 2p; listening if p ≥ 0.1 and p ≥ 2s;
+  silent if both < 0.1; else both; `unknown` when the partner clip is not linked
+  or either member's speech source is `none`.
+* **Dyad windows and interaction measures** (both members' speech masks at 10 Hz):
+  per window, speech overlap (both / either), mutual silence and floor-holder
+  changes, NA unless both member clips' speech is annotated and the recordings agree
+  in length. The conversation's overlap, mutual silence, turn rate and speaking
+  balance are exact aggregates over those windows (`interaction_pair_speech_coverage_frac`
+  says how much of the conversation they cover), so a VAD gap or a short WAV in one
+  member never reads as the pair's silence.
+* **Partner links.** `partner_clip_id` = same interaction, same clip index, set
+  only when both recordings are measured and agree in length within 1 s (no
+  timebase drift): `partner_link_status` says why otherwise.
+
+### 4.5 Audio
+
+50-ms RMS levels of the participant's WAV (48 kHz float on the 16-bit grid):
+the clip median level, own-speech level and its p90-p10 range. Per recording:
+envelope dynamics (p95 − median; < 1.5 dB = no usable signal, the v0 FM4 rule, 13/13
+on 48 labels), the share of exact-zero samples and of ticks at the digital floor
+(both reflect listening time in the denoised audio, not dropouts), and
+**voice isolation**: energy-mean level over own-only ticks minus over
+partner-only ticks — how loudly the partner bleeds in (medians 16-23 dB on
+close mics, 8.8 dB on the V03 room camera). `audio_quality`: `unusable` (missing,
+58-byte or unreadable WAV), `dead`, `silent_during_own_speech` (own-speech ticks
+at the digital floor: VAD says speaking, the track is silent), else `ok`.
+Partial dropouts are not detected (see §7).
+
+### 4.6 Face (V00 only)
+
+Meta released Imitator features only for V00 (`has_imitator_movement` is exactly
+the 42,932 V00 files). Per clip over valid frames (`movement:is_valid`, invalid in
+60-frame processing blocks; 3 of 17 random V00 files have none): mean facial
+action unit intensity and the mean per-AU SD (21 live AUs; AUs 16-18 are dead),
+arousal and valence means and arousal SD. NA elsewhere, with
+`face_features_status = not_provided`.
+
+### 4.7 Framing, visibility and tracking quality
+
+From the released 2D keypoints and box (visibility = confident **and** inside the
+raster): the share of frames with shoulders, hips, knees, ankles and wrists in
+view, `visible_extent` (the lowest landmark pair in view ≥ 80% of frames), box
+height and edge contact (cropping), hand keypoint confidence. From SMPL-H: facing
+angle (body forward axis vs the direction to the camera: 0 = facing it; typical
+medians 3-6°; NA for severe anamorphic) and the reprojection error of the fitted
+upper-body joints against the 2D keypoints, in shoulder widths (recording medians
+0.094 on 1080x1920, 0.137 on V03 2160x3840 — partly a camera offset in the fit
+rather than bad joints; compare within a raster).
+`box_center_jump_max` / `flag_tracker_jump` catch a tracker that re-acquired or
+switched subject. `quarter_turns` is detected per file from the shoulder-hip
+axis (9 of the 1,405 3840x2160 files are already upright).
+
+### 4.8 Moments of interest (Meta's 1P/3P annotations)
+
+Every released entry is a row of `moi_events` (text as released). Per clip:
+distinct 3P and 1P moments overlapping the clip, and the 3P seconds covered —
+**NA when the recording is not annotated for that party, never 0**. Malformed
+entries are labelled (593 zero-length entries, 36 negative-length entries = 12
+moments, 5 entries = 1 moment ending past the recording). Annotations copied between the two members (same kind, same text,
+start within 2 s) are linked (`partner_duplicate_moi_id`) and summarised per
+interaction (`moi_duplication_3p`/`_1p`): found in V03 (7 of 36 1P pairs fully
+copied, mostly session S0203) and 3 V00 pairs; a copied event's target person is
+ambiguous.
+
+### 4.9 Visual quality (the pixel pass)
+
+One keyframe per clip (the keyframe at or before the midpoint; GOPs are 8.33 s),
+made upright (crop, squeeze, turn) at 540 px short side: variance of the
+Laplacian inside the subject box (sharpness; compare within a raster), mean luma
+and clipped share (exposure), Canny edge density outside the box (background
+clutter), and phase-correlation shift of the background against the previous
+clip's frame (camera movement). `visual_status = not_run` until the pass has run.
+
+### 4.10 Conversation-level and temporal properties
+
+* Interaction rows hold values computed **from both members**: duration
+  agreement, fps mismatch, speech status and pair speech measures, posture pair,
+  any-member posture transition, mean and gap of the members' expressivity, MOI
+  coverage and duplication, and the leakage counts below. A value that needs both
+  members is NA when one is missing or unmeasured — never a one-sided value.
+* Session rows hold relationship (Meta's, per session: 9 of 219 recurring dyads
+  change it), dyad key and recurrence, and whether each participant's posture is
+  consistent across the session's interactions. **No within-session order
+  exists** in the release (interaction ids are prompt ids; MP4s carry no
+  timestamps), so "posture changes across the session" is a consistency flag,
+  not a sequence.
+* Temporal: clip position in the recording, partial tail, whether an own-speech
+  segment or motion episode is cut at either boundary, the recording's
+  expressivity trend, and two redundancy measures — RMS difference (in corpus-SD
+  units) of a clip's standardised feature vector from the previous clip and from
+  the recording mean.
+
+### 4.11 Splits and leakage
+
+`split` is Meta's, as released, constant within every session and interaction.
+Meta defines splits at the participant level, but 26 participants appear in two
+splits (all span improvised and naturalistic), 25% of dev and 13% of test
+interactions have a member who also has train recordings, and 7 of 51 A-suffix
+id pairs sit in different splits. Nothing is re-split; instead
+`participants.flag_split_conflict`, `flag_suffix_sibling_split_conflict`,
+`interactions.n_members_in_other_split` and `n_members_suffix_sibling_other_split`
+let a user drop leaky rows, and `participant_component_id` groups participants
+connected through shared sessions for grouped cross-validation.
+
+## 5. Meta's caveats, cross-referenced
+
+Meta publishes **no per-interaction list** for any caveat, so no column is
+"Meta's flag", and not flagged never means known unaffected.
+
+| Meta caveat | what the tables carry | kind |
 |---|---|---|
-| `test_clear_co_speech_gesture_is_accepted` | 55° episodic two-handed | accept |
-| `test_one_handed_gesture_is_accepted` | one arm gesturing, one parked | accept |
-| `test_subtle_but_genuine_gesture_is_not_discarded` | 22°, sustained, coherent | **accept** |
-| `test_static_hands_while_speaking_is_rejected` | clean tracking, no arm motion | reject |
-| `test_tracking_jitter_is_not_mistaken_for_gesture` | 16 mm/frame noise | reject |
-| `test_global_body_movement_is_not_gesture` | 50° whole-body yaw, rigid arms | reject, and torso-frame range < 1 mm against >100 mm world travel |
-| `test_pure_translation_is_invisible_by_construction` | 400 mm translation | measurements bit-identical with and without it |
-| `test_a_single_brief_adjustment_is_not_gesturing` | one 0.8 s movement | reject |
-| `test_motion_unrelated_to_speech_is_rejected` | large motion, only in silence | reject |
+| ~10% of interactions with timestamp/prompt misalignment | `pair_duration_agreement` (member lengths disagree, or timebase drift); `timebase_status`/`timebase_drift_s`; `interaction_type_text_consistency` (9 prompts, 8,007 files, where the prompt text contradicts the type — consistent with the off-by-one prompt ordering Meta describes); `audio_quality = silent_during_own_speech`; `speech_source = vad+transcript_tail` and `speech_annotated_until_s` (VAD or audio shorter than the recording) | proxies (fresh, rule-inferred) |
+| speaker bleed | `voice_isolation_db`, `recording_transcript_echo_frac`, `room_camera_rig`, window/interaction speech overlap | measured + rig class |
+| participants leaving frame | `subject_present_frac`, `*_visible_frac`, `wrists_in_frame_frac`, `box_edge_contact_frac`, `visible_extent` | measured |
+| duplicate / mismatched participant ids | `id_suffix`, `suffix_sibling_key`, `flag_suffix_sibling_split_conflict`, `metadata_status` | parsed / aggregate |
+| MOI timing noise | `moi_malformed`, `partner_duplicate_moi_id`, `moi_duplication_*` | rule-inferred |
+| recording-site variation | `vendor`, `raster_class`, `expressivity_reference_group` | given / parsed |
 
-Synthetic fixtures are used so the suite runs without the 40 TB mount; the
-measures are geometric, so a bundle can be *constructed* with a known answer.
-One fixture detail matters: hand parameters carry a 1e-4 rad tremor, because a
-real fit never produces bit-identical consecutive frames and a synthetic pose
-resting at exactly zero would trip `hand_frozen_frac` spuriously.
+## 6. Missing values, confidence and evidence
 
-The suite also pins properties of the rule itself: ramps are clipped and
-monotone; a non-finite measurement fails its clause rather than passing;
-`exclusion_flags` lists every failure while `fail_stage` names the first; the funnel
-accounts for every clip and reports every clause including the ones that never
-fire.
+* Every nullable column states, in the registry, the exact condition under which
+  it is NA; the validator checks the most consequential ones (MOI counts, face
+  measures, posture confidence, expressivity, pair measures, visual measures).
+* Flags are non-null booleans; a condition that can be undecidable is an enum
+  with an explicit value (`unknown`, `not_applicable`, `not_measured`) instead.
+* Labels carry a confidence (posture, expressivity) defined as evidence support
+  or coverage, stated as such; continuous measures name the columns that qualify
+  them (`qualified_by`: e.g. motion → `smplh_valid_frac`, `wrists_in_frame_frac`).
+* Each column's `evidence` says whether it is given, parsed, measured,
+  rule-inferred or an aggregate, i.e. observed vs inferred.
 
-**Known gap.** The synthetic fixtures establish that each failure mode is caught
-and that subtlety survives; they do not establish the *thresholds*. Those are
-calibrated on real labelled data and reported in
-[`../reports/18_automated_qualification.md`](../reports/18_automated_qualification.md).
+## 7. Assumptions and deliberate exclusions
+
+**Assumptions**
+
+* The two recordings of an interaction share its active-time origin (durations
+  agree within 0.1 s for 63,888 of the 64,116 measured pairs; a VAD-lag probe on 100 pairs
+  centred at 0 s). Pairs that disagree by > 1 s are not linked.
+* Millimetre measures are on the neutral SMPL-H skeleton (betas = 0).
+* The clip length is 30 s (configurable; it is in every clip id).
+* Percentile references are the corpus's full-length measured clips of each
+  reference group.
+* The released 2D keypoints are the visibility ground truth for posture gating.
+
+**Deliberately not included**
+
+* **Per-participant IPC**: Meta gives the IPC codes of prompt roles A and B but
+  no mapping from participant to role; 91% of files have role-specific texts.
+  Only prompts with identical A/B text are marked `ipc_member_assignable`.
+* **Number of visible people / partner in view**: every file tracks one subject
+  and sampled frames show only the participant; a person detector over 1.03 M
+  frames was not justified by that evidence.
+* **Face features for V01-V03**: Meta released none, and the 2D face landmarks
+  are too quantised to substitute (mouth opening vs own VAD r ≈ 0.01-0.08).
+* **Meta's occlusion-tracking / other movement_v4 features**: not in this
+  release's NPZs. Gaze encodings, expression latents and hypernetwork features
+  are opaque embeddings and are not summarised.
+* **Within-session order and session-level trajectories**: no ordering signal
+  exists.
+* **Semantic topic** beyond the prompt template and a keyword task kind.
+* **Prosody (F0), transcript sentiment, moderator identity**: not computed /
+  not released.
+* **Partial audio dropouts**: no validated detector (one known case).
+* **A "good training data" score**: the previous `gesture_quality` encoded one
+  project's inclusion decision and is not republished (see §8).
+
+## 8. What was reused, adapted, replaced or removed
+
+| previous iteration | now | why |
+|---|---|---|
+| M-1 inventory census (ffprobe + stat of every file) | reused as-is (`prior:reused`) | a neutral census of all 129,370 files |
+| FK, torso frame, speed/travel, episodes, arm/hand measures | reused unchanged, recomputed on the new grid for every clip | physically interpretable; 22 columns reproduce the old values exactly on 30-fps files |
+| wrist height, abduction, hands-together, pose spread | adapted: all frames (the old silent fallback from speech frames to all frames is gone; a speech-only variant is NA without speech) | one column held two quantities |
+| hand articulation | adapted: non-frozen hand frames only | frozen hands read as zero articulation |
+| episode median, sync lag | adapted: NA instead of 0 when undefined | 0 is a value |
+| eligibility (8 exclusion reasons, first wins) | replaced by status/class columns (`raster_class`, `smplh_anamorphic`, `room_camera_rig`, `timebase_status`, `measurement_status`) | nothing is excluded; all reasons are recorded |
+| tier-1 gates, tier-2 disqualifiers, `gesture_quality`, `clip_score`, 8-clips/12-files caps | removed | encoded one inclusion decision; §"Reconstructing" in using_the_annotations.md gives an approximate query and what it cannot reproduce |
+| FM1 seated detector (git history only) | adapted into the posture label with an unclear band | was a rejection gate |
+| FM4 dead-audio rule | adapted into `audio_quality = dead` + the continuous value | was a rejection rule |
+| voice isolation | adapted to an energy-mean own-only vs partner-only difference | the released audio is bleed-suppressed; medians measure the noise floor |
+| human gesture verdicts (686 files, 100 human) | carried to `legacy/gesture_review/` with the spans judged; used as weak validation | the only human motion labels |
+| review app/cards/renderer, gallery, export, manifests | removed (restorable from the tag) | review of accept/reject decisions |
+
+## 9. Testing
+
+`PYTHONPATH=src:. python -m pytest`. The end-to-end test builds a miniature
+release on disk (a normal pair with one seated member and one-sided MOI
+annotations, a partner-missing interaction, a pair with an absent member, a pair
+with mixed frame rates and mismatched lengths) and runs catalog → scan → annotate
+→ validate through the real code, asserting pairing symmetry, partner status,
+conversation-level values requiring both members, speaking roles, per-participant
+posture, MOI NA-not-0 semantics, metadata missing states, and prefixed
+propagation of conversation fields to every clip. The validator's fault-injection
+tests corrupt a valid run one way at a time. Module tests cover each annotation
+against synthetic inputs with known answers, and a registry test fails if the
+field reference is stale.

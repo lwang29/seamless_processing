@@ -17,5 +17,6 @@ dependencies:
   - pytest>=8
   - pip
   - pip:
-      # Needed only by `render` when it produces the 30-second review clip.
+      # smplx: only the FK equivalence test; av: the optional scan-video pass.
       - smplx>=0.1.28
+      - av>=12

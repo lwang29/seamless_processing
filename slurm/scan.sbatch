@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Stage 2: window-resolution gesture measurement over the eligible population.
+# Stage 2: continuous measurements for every recording, one shard of interactions per task.
 #
-#   sbatch --array=0-511%64 slurm/scan.sbatch
+#   sbatch --array=0-511%160 slurm/scan.sbatch
 #
-# One task per shard; shards are assigned by a hash of file_id, so a task always
-# gets the same files and a completed shard is skipped on resubmission. Override
-# the config with SC_CONFIG=... and the shard count with SC_TASKS=...; SC_TASKS
-# must equal the array size or shards will be missing at gather time.
-#SBATCH --job-name=si-scan
+# Shards are assigned by a hash of interaction_key (both members of a conversation
+# are measured in the same task), so a task always gets the same interactions and
+# a current shard is skipped on resubmission. SC_TASKS must equal the array size
+# and the config's scan.tasks, or `annotate` will refuse the shards.
+#SBATCH --job-name=si-annotate-scan
 #SBATCH --account=simurgh
 #SBATCH --partition=simurgh
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
-#SBATCH --time=02:00:00
+#SBATCH --mem=16G
+#SBATCH --time=04:00:00
 #SBATCH --output=slurm/logs/scan-%A_%a.out
 
 set -euo pipefail
@@ -21,6 +21,6 @@ export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 
 /simurgh/group/lw29/conda/envs/ViBES/bin/python -m seamless_curation \
-  --config "${SC_CONFIG:-configs/vibes_upper_body.yaml}" scan \
+  --config "${SC_CONFIG:-configs/annotations_v1.yaml}" scan \
   --task-index "${SLURM_ARRAY_TASK_ID:?submit with --array}" \
   --tasks "${SC_TASKS:-512}"

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "seamless-curation"
-version = "1.0.0"
-description = "Manually verified co-speech upper-body subset of the Seamless Interaction dataset"
+version = "2.0.0"
+description = "Comprehensive, level-separated annotation of every recording and clip of the Seamless Interaction dataset"
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.26,<3",
@@ -17,10 +17,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Only the 30-second review clip needs these: it renders the SMPL-H reprojection
-# through smplx. Every other stage — including the scan and the review card —
-# runs the forward kinematics in NumPy against the neutral model directly.
-clip = ["smplx>=0.1.28", "torch>=2.0"]
+# Only the FK equivalence test needs these (it checks the NumPy forward kinematics
+# against smplx); every stage runs the forward kinematics in NumPy.
+smplx = ["smplx>=0.1.28", "torch>=2.0"]
+# The optional pixel pass (scan-video) decodes keyframes with PyAV.
+video = ["av>=12"]
 test = ["pytest>=8"]
 
 [project.scripts]
